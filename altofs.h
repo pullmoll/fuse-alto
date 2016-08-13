@@ -165,7 +165,11 @@ extern afs_fileinfo_t* root_dir;
 extern int vflag;
 
 extern page_t find_file(const char *name);
-extern int find_sysdir_entry(const char *name, page_t& sdpage, off_t& offs, size_t& size);
+extern int free_sysdir_array(afs_dv_t* pdv, size_t count);
+extern int make_sysdir_array(afs_dv_t*& array, size_t& count);
+extern int save_sysdir_array(afs_dv_t* array, size_t count);
+extern int remove_sysdir_entry(const char *name);
+extern int rename_sysdir_entry(const char *name, const char* newname);
 
 extern int verify_headers();
 extern int validate_disk_descriptor();
@@ -174,7 +178,10 @@ extern void fix_disk_descriptor();
 extern word rda_to_vda(word rda);
 extern word vda_to_rda(word vda);
 
-extern void copyfilename(char *dst, const char *src, byte swap = 1);
+extern word alloc_page(word prev);
+
+extern void filename_to_string(char *dst, const char *src);
+extern void string_to_filename(char *dst, const char *src);
 extern void swabit(char *data, int count);
 extern word getword(afs_fa_t *fa);
 
@@ -189,8 +196,12 @@ extern void freeinfo(afs_fileinfo_t* node);
 extern int makeinfo_all();
 extern int makeinfo_file(afs_fileinfo_t* parent, int leader_page_vda);
 extern afs_fileinfo_t* get_fileinfo(const char* path);
-extern void read_page(page_t filepage, char* data);
-extern void read_file(page_t leader_page_vda, char* data);
+
+extern void read_page(page_t filepage, char* data, size_t size = PAGESZ);
+extern void read_file(page_t leader_page_vda, char* data, size_t size);
+
+extern void write_page(page_t filepage, const char* data, size_t size);
+extern void write_file(page_t leader_page_vda, const char* data, size_t size);
 
 extern int alto_time_to_time(afs_time_t at, time_t* ptime);
 extern int alto_time_to_tm(afs_time_t at, struct tm* ptm);
