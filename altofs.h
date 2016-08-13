@@ -22,6 +22,7 @@
 #include <unistd.h>
 #include <sys/time.h>
 #include <sys/stat.h>
+#include <sys/statvfs.h>
 
 #define NPAGES  4872         //!< Number of pages on one disk image
 #define PAGESZ  (256*2)      //!< Number of bytes in one page (data is actually words)
@@ -180,6 +181,7 @@ extern void setBT(page_t page, int val);
 
 extern int delete_file(afs_fileinfo_t* info);
 extern int rename_file(afs_fileinfo_t* info, const char* newname);
+extern int statvfs_kdh(struct statvfs* vfs);
 
 extern void freeinfo(afs_fileinfo_t* node);
 extern int makeinfo_all();

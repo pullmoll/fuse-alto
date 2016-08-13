@@ -253,7 +253,7 @@ int delete_file(afs_fileinfo_t* info)
     info = get_fileinfo("SysDir");
     if (!info)
         return -EBADF;
-    
+
     char* sysdir = new char[info->st.st_size];
     if (!sysdir)
         return -ENOMEM;
@@ -703,4 +703,24 @@ void copyfilename(char* dst, const char* src)
         dst[length] = '\0';
     else
         dst[++length] = '\0';
+}
+
+int statvfs_kdh(struct statvfs* vfs)
+{
+	memset(vfs, 0, sizeof(*vfs));
+	if (!root_dir)
+		return -EBADF;
+
+	vfs->f_bsize = PAGESZ;
+	vfs->f_blocks = NPAGES;
+	if (doubledisk) {
+		vfs->f_frsize *= 2;
+		vfs->f_blocks *= 2;
+	}
+	vfs->f_bfree = khd.free_pages;
+	vfs->f_bavail = khd.free_pages;
+	vfs->f_files = root_dir->nchildren;
+	vfs->f_ffree = 0;
+	vfs->f_namemax = FNLEN-2;
+	return 0;
 }

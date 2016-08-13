@@ -15,7 +15,7 @@
 
 const char* filenames = NULL;
 
-static int getattr_callback(const char *path, struct stat *stbuf)
+static int getattr_alto(const char *path, struct stat *stbuf)
 {
     memset(stbuf, 0, sizeof(struct stat));
     afs_fileinfo_t* info = get_fileinfo(path);
@@ -27,7 +27,7 @@ static int getattr_callback(const char *path, struct stat *stbuf)
     return 0;
 }
 
-static int readdir_callback(const char *path, void *buf, fuse_fill_dir_t filler, off_t offset, struct fuse_file_info *fi)
+static int readdir_alto(const char *path, void *buf, fuse_fill_dir_t filler, off_t offset, struct fuse_file_info *fi)
 {
 
     afs_fileinfo_t* info = get_fileinfo(path);
@@ -48,7 +48,7 @@ static int readdir_callback(const char *path, void *buf, fuse_fill_dir_t filler,
     return 0;
 }
 
-static int open_callback(const char *path, struct fuse_file_info *fi)
+static int open_alto(const char *path, struct fuse_file_info *fi)
 {
     afs_fileinfo_t* info = get_fileinfo(path);
     if (!info)
@@ -56,7 +56,7 @@ static int open_callback(const char *path, struct fuse_file_info *fi)
     return 0;
 }
 
-static int read_callback(const char *path, char *buf, size_t size, off_t offset, struct fuse_file_info *fi)
+static int read_alto(const char *path, char *buf, size_t size, off_t offset, struct fuse_file_info *fi)
 {
     static __thread char data[PAGESZ];
     afs_fileinfo_t* info = get_fileinfo(path);
@@ -94,7 +94,7 @@ static int read_callback(const char *path, char *buf, size_t size, off_t offset,
     return copied;
 }
 
-static int unlink_callback(const char *path)
+static int unlink_alto(const char *path)
 {
     afs_fileinfo_t* info = get_fileinfo(path);
     if (!info)
@@ -102,12 +102,20 @@ static int unlink_callback(const char *path)
     return delete_file(info);
 }
 
-static int rename_callback(const char *path, const char* newname)
+static int rename_alto(const char *path, const char* newname)
 {
     afs_fileinfo_t* info = get_fileinfo(path);
     if (!info)
         return -ENOENT;
     return rename_file(info, newname);
+}
+
+static int statfs_alto(const char *path, struct statvfs* vfs)
+{
+    // We have but a single root directory
+    if (strcmp(path, "/"))
+        return -EINVAL;
+    return statvfs_kdh(vfs);
 }
 
 #if defined(DEBUG)
@@ -143,7 +151,7 @@ static const char* fuse_cap(unsigned flags)
 }
 #endif
 
-void* init_callback(fuse_conn_info* info)
+void* init_alto(fuse_conn_info* info)
 {
     (void)info;
     little.e = 1;
@@ -212,12 +220,13 @@ int main(int argc, char *argv[])
         return usage(argv[0]);
     }
     filenames = argv[--argc];
-    fuse_ops.getattr = getattr_callback;
-    fuse_ops.unlink = unlink_callback;
-    fuse_ops.rename = rename_callback;
-    fuse_ops.open = open_callback;
-    fuse_ops.read = read_callback;
-    fuse_ops.readdir = readdir_callback;
-    fuse_ops.init = init_callback;
+    fuse_ops.getattr = getattr_alto;
+    fuse_ops.unlink = unlink_alto;
+    fuse_ops.rename = rename_alto;
+    fuse_ops.open = open_alto;
+    fuse_ops.read = read_alto;
+    fuse_ops.readdir = readdir_alto;
+    fuse_ops.statfs = statfs_alto;
+    fuse_ops.init = init_alto;
     return fuse_main(argc, argv, &fuse_ops, NULL);
 }
