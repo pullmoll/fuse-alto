@@ -66,14 +66,15 @@ typedef struct {
 }   afs_time_t;
 
 typedef struct {
-    word        sn[2];          //!< Serial number 32 bit
+    word        sn[2];          //!< Serial number 32 bit (really?)
 }   afs_sn_t;
 
 /**
  * @brief Structure of the file pointer
  */
 typedef struct {
-    afs_sn_t    serial_number;
+    word        fid_dir;
+    word        serialno;
     word        version;
     word        blank;
     word        leader_vda;
@@ -164,17 +165,18 @@ extern afs_fileinfo_t* root_dir;
 extern int vflag;
 
 extern page_t find_file(const char *name);
+extern int find_sysdir_entry(const char *name, page_t& sdpage, off_t& offs, size_t& size);
 
 extern int verify_headers();
+extern int validate_disk_descriptor();
+extern void fix_disk_descriptor();
 
 extern word rda_to_vda(word rda);
 extern word vda_to_rda(word vda);
 
-extern void copyfilename(char *dst, const char *src);
+extern void copyfilename(char *dst, const char *src, byte swap = 1);
 extern void swabit(char *data, int count);
 extern word getword(afs_fa_t *fa);
-extern int validate_disk_descriptor();
-extern void fix_disk_descriptor();
 
 extern int getBT(page_t page);
 extern void setBT(page_t page, int val);
@@ -188,6 +190,7 @@ extern int makeinfo_all();
 extern int makeinfo_file(afs_fileinfo_t* parent, int leader_page_vda);
 extern afs_fileinfo_t* get_fileinfo(const char* path);
 extern void read_page(page_t filepage, char* data);
+extern void read_file(page_t leader_page_vda, char* data);
 
 extern int alto_time_to_time(afs_time_t at, time_t* ptime);
 extern int alto_time_to_tm(afs_time_t at, struct tm* ptm);
@@ -195,7 +198,12 @@ extern int alto_time_to_tm(afs_time_t at, struct tm* ptm);
 extern int read_disk_file(const char* name);
 extern int read_single_disk(const char *name, afs_page_t* diskp);
 
+extern void dump_memory(char* data, size_t nwords);
+extern void dump_disk_block(page_t page);
+extern int file_length(page_t leader_page_vda);
+
 /* general utilities */
+extern void swabit(char *data, size_t size);
 extern int  my_assert(int flag, const char *errmsg, ...);	/* printf style */
 extern void my_assert_or_die(int flag, const char *errmsg,...);	/* printf style */
 

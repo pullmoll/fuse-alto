@@ -60,7 +60,7 @@ int read_disk_file(const char* name)
     int ok;
 
     ok = my_assert(sizeof(afs_leader_t) == PAGESZ,
-        "%s: sizeof(afs_leader_t) is not %d", __func__, PAGESZ);
+    "%s: sizeof(afs_leader_t) is not %d", __func__, PAGESZ);
     if (!ok)
         return -ENOSYS;
 
@@ -97,12 +97,12 @@ int read_single_disk(const char *name, afs_page_t* diskp)
         sprintf(cmd, "zcat %s", name);
         infile = popen(cmd, "r");
         my_assert_or_die(infile != NULL,
-            "%s: popen failed on zcat %s\n", __func__, name);
+        "%s: popen failed on zcat %s\n", __func__, name);
         delete[] cmd;
     } else {
         infile = fopen (name, "rb");
         my_assert_or_die(infile != NULL,
-            "%s: open failed on Alto disk image file %s\n", __func__, name);
+        "%s: open failed on Alto disk image file %s\n", __func__, name);
     }
 
     while (totalbytes < total) {
@@ -110,40 +110,58 @@ int read_single_disk(const char *name, afs_page_t* diskp)
         dp += bytes;
         totalbytes += bytes;
         ok = my_assert(!ferror(infile) && !feof(infile),
-            "% Disk read failed: %d bytes read instead of %d\n", __func__, totalbytes, total);
+        "%s: Disk read failed: %d bytes read instead of %d\n", __func__, totalbytes, total);
         if (!ok)
             break;
     }
     return ok;
 }
 
-void dump_disk_block(int page)
+void dump_memory(char* data, size_t nwords)
 {
-    int row, col;
-    word d;
-    char str[17], c;
-    for (row = 0; row < 16; row++) {
-        printf("%04x:", row * 8);
-        for (col = 0; col < 8; col++) {
-            printf(" %04x", disk[page].data[(row * 8) + col]);
+    char str[17];
+
+    for (size_t row = 0; row < (nwords+7)/8; row++) {
+        printf("%04lx:", row * 8);
+        for (int col = 0; col < 8; col++) {
+            size_t offs = (row * 8 + col) * 2;
+            if (offs/2 < nwords) {
+                unsigned char h = data[(offs+0) ^ little.l];
+                unsigned char l = data[(offs+1) ^ little.l];
+                printf(" %02x%02x", h, l);
+            } else {
+                printf("     ");
+            }
         }
 
-        for (col = 0; col < 8; col++) {
-            d = disk[page].data[(row * 8) + col];
-            c = (d >> 8) & 0x7f;
-            str[(col * 2)] = (isprint ((unsigned char)c)) ? c : '.';
-            c = (d) & 0x7f;
-            str[(col * 2) + 1] = (isprint ((unsigned char)c)) ? c : '.';
+        for (size_t col = 0; col < 8; col++) {
+            size_t offs = (row * 8 + col) * 2;
+            if (offs/2 < nwords) {
+                unsigned char h = data[(offs+0) ^ little.l];
+                unsigned char l = data[(offs+1) ^ little.l];
+                str[(col * 2) + 0] = (isprint(h)) ? h : '.';
+                str[(col * 2) + 1] = (isprint(l)) ? l : '.';
+            } else {
+                str[(col * 2) + 0] = ' ';
+                str[(col * 2) + 1] = ' ';
+            }
         }
-        str[16] = 0;
+        str[16] = '\0';
         printf("  %16s\n", str);
     }
 }
 
-int file_length(int leader_page_VDA)
+void dump_disk_block(page_t pageno)
+{
+    char page[PAGESZ];
+    read_page(pageno, page);
+    dump_memory(page, PAGESZ);
+}
+
+int file_length(page_t leader_page_vda)
 {
     int length = 0;
-    int filepage = leader_page_VDA;
+    page_t filepage = leader_page_vda;
     afs_label_t* label;
 
     while (filepage != 0) {
@@ -207,33 +225,108 @@ page_t find_file(const char *name)
     return -1;
 }
 
+/**
+ * @brief Find a file name in the SysDir file
+ * @param name file name to look for (without trailing dot)
+ * @param[out] sdpage page number (of the SysDir file) where the entry starts
+ * @param[out] offs offset into the page
+ * @param[out] size size of the entry
+ * @return 0 on success, or -ENOENT on error
+ */
+int find_sysdir_entry(const char* name, page_t& sdpage, off_t& offs, size_t& size)
+{
+    if (vflag)
+        printf("%s: searching for %s\n", __func__, name);
+
+    afs_fileinfo_t* info = get_fileinfo("SysDir");
+    if (!info)
+        return -ENOENT;
+
+    const size_t sdsize = info->st.st_size;
+    if (vflag)
+        printf("%s: SysDir is %lu bytes\n", __func__, sdsize);
+
+    char* sysdir = new char[(sdsize | (PAGESZ-1)) + 1];
+    my_assert(sysdir !=  NULL, "%s: new char[%d] failed\n", __func__, sdsize);
+    if (!sysdir)
+        return -ENOMEM;
+
+    read_file(info->leader_page_vda, sysdir);
+    dump_memory(sysdir, sdsize);
+
+    afs_dv_t* pdv = (afs_dv_t *)sysdir;
+    afs_dv_t* end = (afs_dv_t *)(sysdir + sdsize);
+    while (pdv < end) {
+        afs_dv_t dv;
+        memcpy(&dv, pdv, sizeof(dv));
+        swabit((char *)&dv, sizeof(dv));
+
+        byte type = dv.typelength / 0400;
+        byte length = dv.typelength % 0400;
+        if (type == 0) {
+            break;
+        }
+        if (vflag) {
+            printf("%s:  ************ directory entry : @%#x\n", __func__, (word)((char *)pdv - sysdir));
+            printf("%s:  length                       : %u\n", __func__, length);
+            printf("%s:  type                         : %u\n", __func__, type);
+            printf("%s:  fileptr.fid_dir              : %#x\n", __func__, dv.fileptr.fid_dir);
+            printf("%s:  fileptr.serialno             : %#x\n", __func__, dv.fileptr.serialno);
+            printf("%s:  fileptr.version              : %#x\n", __func__, dv.fileptr.version);
+            printf("%s:  fileptr.blank                : %#x\n", __func__, dv.fileptr.blank);
+            printf("%s:  fileptr.leader_vda           : %u\n", __func__, dv.fileptr.leader_vda);
+            printf("%s:  filename length              : %u\n", __func__, dv.filename[little.l]);
+        }
+        byte fnlen = dv.filename[little.l];
+        length = (fnlen | 1) + 1;
+        char fn[FNLEN+2];
+        copyfilename(fn, dv.filename);
+        if (vflag)
+            printf("%s:  filename                     : %s.\n", __func__, &fn[1]);
+        // check if we found the entry with the matching filename
+        if (0 == strcmp(name, &fn[1])) {
+            off_t o = (off_t)((char *)pdv - sysdir);
+            sdpage = o / PAGESZ;
+            offs = o & (PAGESZ-1);
+            size = sizeof(*pdv) - sizeof(dv.filename) + length;
+            delete[] sysdir;
+            return 0;
+        }
+        pdv = (afs_dv_t*)((char *)pdv + sizeof(*pdv) - sizeof(dv.filename) + length);
+    }
+    delete[] sysdir;
+    return -ENOENT;
+}
 
 int delete_file(afs_fileinfo_t* info)
 {
-    afs_label_t* l = page_label(info->leader_page_vda);
-    afs_leader_t* lp = page_leader(info->leader_page_vda);
-    int freed = 0;
-
     // FIXME: Do we need to modify the leader page?
+    afs_leader_t* lp = page_leader(info->leader_page_vda);
+
+    char fn[FNLEN+2];
+    copyfilename(fn, lp->filename);
+
+    // Never allow deleting SysDir or DiskDescriptor
+    if (0 == strcmp(fn+1, "SysDir") || 0 == strcmp(fn+1, "DiskDescriptor"))
+        return -EPERM;
+
     memset(lp->filename, 0, sizeof(lp->filename));
     memset(&lp->dir_fp_hint, 0, sizeof(lp->dir_fp_hint));
     memset(&lp->last_page_hint, 0, sizeof(lp->last_page_hint));
 
-    // mark the leader page label as unused
-    setBT(info->leader_page_vda, 1);
-    l->fid_file = 0xffff;
-    l->fid_dir = 0xffff;
-    l->fid_id = 0xffff;
-    freed++;
-
-    while (l->next_rda != 0) {
-        page_t pageno = rda_to_vda(l->next_rda);
-        setBT(pageno, 1);   // mark as free
-        l = page_label(pageno);
+    page_t filepage = info->leader_page_vda;
+    afs_label_t* l;
+    // mark the file pages as unused
+    int freed = 0;
+    while (filepage != 0) {
+        l = page_label(filepage);
         l->fid_file = 0xffff;
         l->fid_dir = 0xffff;
         l->fid_id = 0xffff;
         freed++;
+        if (l->nbytes < PAGESZ)
+            break;
+        filepage = rda_to_vda(l->next_rda);
     }
     khd.free_pages += freed;
 
@@ -249,19 +342,12 @@ int delete_file(afs_fileinfo_t* info)
         break;
     }
 
-    // Modify the SysDir file
-    info = get_fileinfo("SysDir");
-    if (!info)
-        return -EBADF;
-
-    char* sysdir = new char[info->st.st_size];
-    if (!sysdir)
-        return -ENOMEM;
-    ssize_t offs = 0;
-    while (offs < info->st.st_size) {
-
-    }
-    delete[] sysdir;
+    page_t sdpage;
+    off_t offs;
+    size_t size;
+    find_sysdir_entry(fn+1, sdpage, offs, size);
+    printf("%s: filename=%s at sdpage:%lu offs:%ld size:%lu\n", __func__,
+        fn+1, sdpage, offs, size);
 
     return 0;
 }
@@ -337,8 +423,8 @@ int makeinfo_file(afs_fileinfo_t* parent, int leader_page_vda)
     afs_leader_t* lp = page_leader(leader_page_vda);
 
     my_assert_or_die (l->filepage == 0,
-        "%s: page %d is not a leader page!\n",
-        __func__, leader_page_vda);
+    "%s: page %d is not a leader page!\n",
+    __func__, leader_page_vda);
 
     copyfilename(fn, lp->filename);
 
@@ -364,7 +450,7 @@ int makeinfo_file(afs_fileinfo_t* parent, int leader_page_vda)
     // Count the file size and pages
     int npages = 0;
     while (l->next_rda != 0) {
-        const int filepage = rda_to_vda(l->next_rda);
+        const page_t filepage = rda_to_vda(l->next_rda);
         l = page_label(filepage);
         info->st.st_size += l->nbytes;
         npages++;
@@ -383,7 +469,7 @@ int makeinfo_file(afs_fileinfo_t* parent, int leader_page_vda)
     l = page_label(leader_page_vda);
     npages = 0;
     while (l->next_rda != 0) {
-        const int filepage = rda_to_vda(l->next_rda);
+        const page_t filepage = rda_to_vda(l->next_rda);
         info->pages[npages++] = filepage;
         l = page_label(filepage);
     }
@@ -410,15 +496,22 @@ int makeinfo_file(afs_fileinfo_t* parent, int leader_page_vda)
     return 0;
 }
 
-
+/**
+ * @brief Get a fileinfo entry for the given path
+ * @param path file name with leading path (i.e. "/" prepended)
+ * @return pointer to afs_fileinfo_t for the entry, or NULL on error
+ */
 afs_fileinfo_t* get_fileinfo(const char* path)
 {
     if (!root_dir)
         return NULL;
+
     if (!strcmp(path, "/"))
         return root_dir;
+
     if (path[0] == '/')
         path++;
+
     for (size_t i = 0; i < root_dir->nchildren; i++) {
         afs_fileinfo_t* node = root_dir->children[i];
         if (!node)
@@ -430,15 +523,35 @@ afs_fileinfo_t* get_fileinfo(const char* path)
 }
 
 /**
- * @brief Read the page filepage into the the buffer at data
+ * @brief Read the page filepage into the buffer at data
  * @param filepage page number
  * @param data buffer of PAGESZ bytes
  */
 void read_page(page_t filepage, char* data)
 {
-    char *src = (char *)&disk[filepage].data;
-    for (int i = 0; i < PAGESZ; i++)
+    const char *src = (char *)&disk[filepage].data;
+    for (word i = 0; i < PAGESZ; i++)
         data[i] = src[i ^ little.l];
+}
+
+/**
+ * @brief Read a file starting ad leader_page_vda into the buffer at data
+ * @param lead_page_vda page number of leader VDA
+ * @param data buffer of PAGESZ bytes
+ */
+void read_file(page_t leader_page_vda, char* data)
+{
+    afs_label_t* l = page_label(leader_page_vda);
+    page_t filepage = rda_to_vda(l->next_rda);
+    off_t offs = 0;
+    while (filepage) {
+        l = page_label(filepage);
+        const word nbytes = l->nbytes;
+        printf("%s: offs=%lu filepage=%ld nbytes=%u\n", __func__, offs, filepage, nbytes);
+        read_page(filepage, data + offs);
+        filepage = rda_to_vda(l->next_rda);
+        offs += PAGESZ;
+    }
 }
 
 
@@ -455,7 +568,7 @@ int alto_time_to_time(afs_time_t at, time_t* ptm)
 int alto_time_to_tm(afs_time_t at, struct tm* ptm)
 {
     time_t time;
-	alto_time_to_time(at, &time);
+    alto_time_to_time(at, &time);
     memcpy(ptm, localtime(&time), sizeof(*ptm));
     return 0;
 }
@@ -476,8 +589,8 @@ word getword(afs_fa_t *fa)
         fa->char_pos = 0;
     }
     my_assert_or_die (fa->page_number == l->filepage,
-		"disk corruption - expected vda %d to be filepage %d\n",
-		fa->vda, l->filepage);
+    "disk corruption - expected vda %d to be filepage %d\n",
+    fa->vda, l->filepage);
     w = disk[fa->vda].data[fa->char_pos >> 1];
     if (little.l)
         w = (w >> 8) | (w << 8);
@@ -544,19 +657,18 @@ int is_free_page(int page)
 
 /* Sanity Checking */
 
-/* make sure that each page header refers to itself */
+/**
+ * @brief Make sure that each page header refers to itself
+ */
 int verify_headers()
 {
-    int i, ok, last;
-    ok = 1;
+    int ok = 1;
 
-    return ok;
-
-    last = doubledisk ? NPAGES * 2 : NPAGES;
-    for (i = 0; i < last; i += 1)
-        ok &= my_assert(disk[i].pagenum == rda_to_vda (disk[i].header[1]),
-			"page %04x header doesn't match: %04x %04x\n",
-			disk[i].pagenum, disk[i].header[0], disk[i].header[1]);
+    const int last = doubledisk ? NPAGES * 2 : NPAGES;
+    for (int i = 0; i < last; i += 1)
+        ok &= my_assert(disk[i].pagenum == rda_to_vda(disk[i].header[1]),
+        "%s: page %04x header doesn't match: %04x %04x\n", __func__,
+        disk[i].pagenum, disk[i].header[0], disk[i].header[1]);
     return ok;
 }
 
@@ -613,7 +725,7 @@ int validate_disk_descriptor()
     for (page = 0; page < last; page += 1)
         nfree += getBT(page) ^ 1;
     ok &= my_assert (nfree == khd.free_pages,
-        "Bit table count %d doesn't match KDH free pages %d\n", nfree, khd.free_pages);
+    "Bit table count %d doesn't match KDH free pages %d\n", nfree, khd.free_pages);
 
     /* Count free pages in actual image */
     nfree = 0;
@@ -621,8 +733,8 @@ int validate_disk_descriptor()
         nfree += is_free_page(page);
 
     ok &= my_assert ((nfree == khd.free_pages),
-        "Actual free page count %d doesn't match KDH value %d\n",
-        nfree, khd.free_pages);
+    "Actual free page count %d doesn't match KDH value %d\n",
+    nfree, khd.free_pages);
     return ok;
 }
 
@@ -668,17 +780,16 @@ void my_assert_or_die(int flag, const char *errmsg, ...)
     }
 }
 
-void swabit(char *data, int count)
+void swabit(char *data, size_t count)
 {
-    word junk, *d;
     my_assert_or_die ((count & 1) == 0 && ((size_t)data & 1) == 0,
-		"%s: Called with unaligned values\n", __func__);
+    "%s: Called with unaligned values\n", __func__);
     count /= 2;
-    d = (word *) data;
+    word* d = (word *) data;
     while (count--) {
-        junk = *d;
-        junk = (junk >> 8) | (junk << 8);
-        *d++ = junk;
+        word w = *d;
+        w = (w >> 8) | (w << 8);
+        *d++ = w;
     }
 }
 
@@ -690,13 +801,13 @@ void swabit(char *data, int count)
  * @param dst destination buffer of FNLEN characters
  * @param src pointer to a Alto file system filename
  */
-void copyfilename(char* dst, const char* src)
+void copyfilename(char* dst, const char* src, byte swap)
 {
-    int length = src[little.l];
+    int length = src[little.l & swap];
     if (length < 0 || length >= FNLEN)
         length = FNLEN - 1;
     for (int i = 0; i < length; i++)
-        dst[i] = src[i ^ little.l];
+        dst[i] = src[i ^ (little.l & swap)];
     /* erase closing '.' */
     length--;
     if ('.' == dst[length])
@@ -707,20 +818,20 @@ void copyfilename(char* dst, const char* src)
 
 int statvfs_kdh(struct statvfs* vfs)
 {
-	memset(vfs, 0, sizeof(*vfs));
-	if (!root_dir)
-		return -EBADF;
+    memset(vfs, 0, sizeof(*vfs));
+    if (!root_dir)
+        return -EBADF;
 
-	vfs->f_bsize = PAGESZ;
-	vfs->f_blocks = NPAGES;
-	if (doubledisk) {
-		vfs->f_frsize *= 2;
-		vfs->f_blocks *= 2;
-	}
-	vfs->f_bfree = khd.free_pages;
-	vfs->f_bavail = khd.free_pages;
-	vfs->f_files = root_dir->nchildren;
-	vfs->f_ffree = 0;
-	vfs->f_namemax = FNLEN-2;
-	return 0;
+    vfs->f_bsize = PAGESZ;
+    vfs->f_blocks = NPAGES;
+    if (doubledisk) {
+        vfs->f_frsize *= 2;
+        vfs->f_blocks *= 2;
+    }
+    vfs->f_bfree = khd.free_pages;
+    vfs->f_bavail = khd.free_pages;
+    vfs->f_files = root_dir->nchildren;
+    vfs->f_ffree = 0;
+    vfs->f_namemax = FNLEN-2;
+    return 0;
 }

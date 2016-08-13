@@ -174,6 +174,7 @@ void* init_alto(fuse_conn_info* info)
     // FIXME: Where do I really get the "device" to mount?
     // Handling it on my own by using the last argv[] can't be right.
     read_disk_file(filenames);
+    // verify_headers();
     if (!validate_disk_descriptor())
         fix_disk_descriptor();
     makeinfo_all();
