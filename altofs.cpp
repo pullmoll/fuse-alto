@@ -34,7 +34,7 @@ static bool doubledisk = false;
 static char *dp0name = NULL;
 static char *dp1name = NULL;
 
-int vflag = 1;
+int vflag = 0;
 
 afs_fileinfo_t* root_dir = NULL;
 
@@ -55,17 +55,23 @@ afs_label_t* page_label(int vda)
 /* Main work-doing procedures */
 /******************************/
 
+/**
+ * @brief Read a disk file or two of them separated by comma
+ * @param name filename of the disk image(s)
+ * @return 0 on succes, or -ENOSYS, -EBADF etc. on error
+ */
 int read_disk_file(const char* name)
 {
     int ok;
 
     ok = my_assert(sizeof(afs_leader_t) == PAGESZ,
-    "%s: sizeof(afs_leader_t) is not %d", __func__, PAGESZ);
+        "%s: sizeof(afs_leader_t) is not %d",
+        __func__, PAGESZ);
     if (!ok)
         return -ENOSYS;
 
     dp0name = strdup(name);
-    dp1name = strchr(dp0name, ':');
+    dp1name = strchr(dp0name, ',');
     if (dp1name)
         *dp1name++ = '\0';
     ok = read_single_disk(dp0name, &disk[0]);
@@ -80,6 +86,11 @@ int read_disk_file(const char* name)
     return 0;
 }
 
+/**
+ * @brief Read a single file to the in-memory disk space
+ * @param name file name
+ * @param diskp pointer to the starting disk page
+ */
 int read_single_disk(const char *name, afs_page_t* diskp)
 {
     FILE *infile;
@@ -97,12 +108,14 @@ int read_single_disk(const char *name, afs_page_t* diskp)
         sprintf(cmd, "zcat %s", name);
         infile = popen(cmd, "r");
         my_assert_or_die(infile != NULL,
-        "%s: popen failed on zcat %s\n", __func__, name);
+            "%s: popen failed on zcat %s\n",
+            __func__, name);
         delete[] cmd;
     } else {
         infile = fopen (name, "rb");
         my_assert_or_die(infile != NULL,
-        "%s: open failed on Alto disk image file %s\n", __func__, name);
+            "%s: fopen failed on Alto disk image file %s\n",
+            __func__, name);
     }
 
     while (totalbytes < total) {
@@ -110,10 +123,12 @@ int read_single_disk(const char *name, afs_page_t* diskp)
         dp += bytes;
         totalbytes += bytes;
         ok = my_assert(!ferror(infile) && !feof(infile),
-        "%s: Disk read failed: %d bytes read instead of %d\n", __func__, totalbytes, total);
+            "%s: Disk read failed: %d bytes read instead of %d\n",
+            __func__, totalbytes, total);
         if (!ok)
             break;
     }
+    fclose(infile);
     return ok;
 }
 
@@ -288,11 +303,11 @@ int make_sysdir_array(afs_dv_t*& array, size_t& count)
         return -ENOENT;
 
     size_t sdsize = info->st.st_size;
-    if (vflag)
-        printf("%s: SysDir is %lu bytes\n", __func__, sdsize);
-
     char* sysdir = (char *) malloc(sdsize);
-    my_assert(sysdir !=  NULL, "%s: sysdir = malloc(%d) failed\n", __func__, sdsize);
+
+    my_assert(sysdir !=  NULL,
+        "%s: sysdir = malloc(%d) failed\n",
+        __func__, sdsize);
     if (!sysdir)
         return -ENOMEM;
 
@@ -324,7 +339,7 @@ int make_sysdir_array(afs_dv_t*& array, size_t& count)
 
         byte length = dv->typelength % 0400;
         byte type = dv->typelength / 0400;
-        if (vflag) {
+        if (vflag > 1) {
             printf("%s:  ** directory entry : @%#x\n", __func__, (word)((char *)pdv - sysdir));
             printf("%s:  length             : %u\n", __func__, length);
             printf("%s:  type               : %u\n", __func__, type);
@@ -337,10 +352,14 @@ int make_sysdir_array(afs_dv_t*& array, size_t& count)
         }
         char fn[FNLEN+2];
         filename_to_string(fn, dv->filename);
-        if (vflag)
+        if (vflag > 1)
             printf("%s:  filename           : %s.\n", __func__, &fn[1]);
 
         pdv = (afs_dv_t*)((char *)pdv + esize);
+    }
+    if (vflag) {
+        size_t eod = (size_t)((char *)pdv - sysdir); 
+        printf("%s: SysDir usage is %lu/%lu bytes\n", __func__, eod, sdsize);
     }
 
     free(sysdir);
@@ -357,12 +376,12 @@ int save_sysdir_array(afs_dv_t* array, size_t count)
         return -ENOENT;
 
     size_t sdsize = info->st.st_size;
-    if (vflag)
-        printf("%s: SysDir is %lu bytes\n", __func__, sdsize);
 
     // Allocate sysdir with slack for one extra afs_dv_t
     char* sysdir = (char *) calloc(1, sdsize + sizeof(afs_dv_t));
-    my_assert(sysdir !=  NULL, "%s: sysdir = calloc(1,%d) failed\n", __func__, sdsize + sizeof(afs_dv_t));
+    my_assert(sysdir !=  NULL,
+        "%s: sysdir = calloc(1,%d) failed\n",
+        __func__, sdsize + sizeof(afs_dv_t));
     if (!sysdir)
         return -ENOMEM;
 
@@ -396,9 +415,13 @@ int save_sysdir_array(afs_dv_t* array, size_t count)
         if (pdv + 1 <= end)
             pdv->filename[little.l] = 0;
         sdsize += esize;
-        if (vflag)
-            printf("%s: SysDir size increased to %lu bytes\n", __func__, sdsize);
     }
+
+    if (vflag) {
+        size_t eod = (size_t)((char *)pdv - sysdir); 
+        printf("%s: SysDir usage is %lu/%lu bytes\n", __func__, eod, sdsize);
+    }
+
 #if defined(DEBUG)
     dump_memory(sysdir, sdsize);
 #endif
@@ -544,7 +567,8 @@ int rename_file(afs_fileinfo_t* info, const char* newname)
         newname++;
 
     int ok = my_assert(strlen(newname) < FNLEN-2,
-        "%s: newname too long for '%s' -> '%s'\n", __func__, info->name, newname);
+        "%s: newname too long for '%s' -> '%s'\n",
+        __func__, info->name, newname);
     if (!ok)
         return -EINVAL;
 
@@ -578,7 +602,8 @@ int makeinfo_all()
     }
 
     root_dir = new afs_fileinfo_t;
-    my_assert(root_dir != 0, "%s: new root_dir failed\n", __func__);
+    my_assert(root_dir != 0,
+        "%s: new root_dir failed\n", __func__);
     if (!root_dir)
         return -ENOMEM;
 
@@ -610,15 +635,18 @@ int makeinfo_file(afs_fileinfo_t* parent, int leader_page_vda)
     afs_leader_t* lp = page_leader(leader_page_vda);
 
     my_assert_or_die (l->filepage == 0,
-    "%s: page %d is not a leader page!\n",
-    __func__, leader_page_vda);
+        "%s: page %d is not a leader page!\n",
+        __func__, leader_page_vda);
 
     filename_to_string(fn, lp->filename);
 
     afs_fileinfo_t* info = new afs_fileinfo_t;
-    my_assert(info != 0, "%s: new afs_fileinfo_t failed for %s\n", __func__, &fn[1]);
+    my_assert(info != 0,
+        "%s: new afs_fileinfo_t failed for %s\n",
+        __func__, &fn[1]);
     if (!info)
         return -ENOMEM;
+
     memset(info, 0, sizeof(*info));
 
     info->parent = parent;
@@ -650,7 +678,9 @@ int makeinfo_file(afs_fileinfo_t* parent, int leader_page_vda)
     // Create the list of file pages for random access
     info->npages = npages;
     info->pages = (word *)malloc(sizeof(word) * npages);
-    my_assert(info->pages != 0, "%s: malloc(%u) failed for %s\n", __func__, sizeof(word) * npages, &fn[1]);
+    my_assert(info->pages != 0,
+        "%s: malloc(%u) failed for %s\n",
+        __func__, sizeof(word) * npages, &fn[1]);
     if (!info->pages) {
         delete info;
         return -ENOMEM;
@@ -673,7 +703,9 @@ int makeinfo_file(afs_fileinfo_t* parent, int leader_page_vda)
     // Make a new entry in the parent's list of children
     size_t size = (parent->nchildren + 1) * sizeof(*parent->children);
     parent->children = (afs_fileinfo_t **) realloc(parent->children, size);
-    my_assert(parent->children != 0, "%s: realloc(...,%u) failed for %s\n", __func__, size, &fn[1]);
+    my_assert(parent->children != 0,
+        "%s: realloc(...,%u) failed for %s\n",
+        __func__, size, &fn[1]);
     if (!parent->children) {
         free(info->pages);
         delete info;
@@ -818,7 +850,9 @@ word getword(afs_fa_t *fa)
     afs_label_t* l = page_label(fa->vda);
     word w;
 
-    my_assert_or_die ((fa->char_pos & 1) == 0, "getword called on odd byte boundary\n");
+    my_assert_or_die((fa->char_pos & 1) == 0,
+        "%s: Called on odd byte boundary (%u)\n",
+        __func__, fa->char_pos);
 
     if (fa->char_pos >= l->nbytes) {
         if (l->next_rda == 0 || l->nbytes < PAGESZ)
@@ -828,12 +862,14 @@ word getword(afs_fa_t *fa)
         fa->page_number += 1;
         fa->char_pos = 0;
     }
-    my_assert_or_die (fa->page_number == l->filepage,
-    "disk corruption - expected vda %d to be filepage %d\n",
-    fa->vda, l->filepage);
+    my_assert_or_die(fa->page_number == l->filepage,
+        "%s: disk corruption - expected vda %d to be filepage %d\n",
+        __func__, fa->vda, l->filepage);
+
     w = disk[fa->vda].data[fa->char_pos >> 1];
     if (little.l)
         w = (w >> 8) | (w << 8);
+
     fa->char_pos += 2;
     return w;
 }
@@ -842,7 +878,9 @@ word getword(afs_fa_t *fa)
 void putword(afs_fa_t *fa, word w)
 {
     afs_label_t* l = page_label(fa->vda);
-    my_assert_or_die ((fa->char_pos & 1) == 0, "putword called on odd byte boundary\n");
+    my_assert_or_die((fa->char_pos & 1) == 0,
+        "%s: Called on odd byte boundary (%d)\n",
+        __func__, fa->char_pos);
     /*
      * case 1: writing in the middle of an existing file, on a page with more
      * bytes than the one we're at.
@@ -907,8 +945,8 @@ int verify_headers()
     const int last = doubledisk ? NPAGES * 2 : NPAGES;
     for (int i = 0; i < last; i += 1)
         ok &= my_assert(disk[i].pagenum == rda_to_vda(disk[i].header[1]),
-        "%s: page %04x header doesn't match: %04x %04x\n", __func__,
-        disk[i].pagenum, disk[i].header[0], disk[i].header[1]);
+            "%s: page %04x header doesn't match: %04x %04x\n",
+            __func__, disk[i].pagenum, disk[i].header[0], disk[i].header[1]);
     return ok;
 }
 
@@ -918,14 +956,16 @@ int verify_headers()
  */
 int validate_disk_descriptor()
 {
-    int ddlp, i, page, nfree, ok, last;
+    int ddlp, i, nfree, ok;
     afs_leader_t* lp;
     afs_label_t* l;
     afs_fa_t fa;
 
     /* Locate DiskDescriptor and copy it into the global data structure */
     ddlp = find_file("DiskDescriptor");
-    ok = my_assert(ddlp != -1, "Can't find DiskDescriptor\n");
+    ok = my_assert(ddlp != -1,
+        "%s: Can't find DiskDescriptor\n",
+        __func__);
     if (!ok)
         return ok;
 
@@ -945,36 +985,38 @@ int validate_disk_descriptor()
 
     if (doubledisk) {
         /* for double disk systems */
-        ok &= my_assert (khd.nDisks == 2, "Expect double disk system\n");
-        ok &= my_assert (khd.nTracks == 203, "KDH tracks != 203\n");
-        ok &= my_assert (khd.nHeads == 2, "KDH heads != 2\n");
-        ok &= my_assert (khd.nSectors == 12, "KDH sectors != 12\n");
-        ok &= my_assert (khd.def_versions_kept == 0, "defaultVersions != 0\n");
+        ok &= my_assert (khd.nDisks == 2, "%s: Expect double disk system\n", __func__);
+        ok &= my_assert (khd.nTracks == 203, "%s: KDH tracks != 203\n", __func__);
+        ok &= my_assert (khd.nHeads == 2, "%s: KDH heads != 2\n", __func__);
+        ok &= my_assert (khd.nSectors == 12, "%s: KDH sectors != 12\n", __func__);
+        ok &= my_assert (khd.def_versions_kept == 0, "%s: defaultVersions != 0\n", __func__);
     } else {
         /* for single disk systems */
-        ok &= my_assert (khd.nDisks == 1, "Expect single disk system\n");
-        ok &= my_assert (khd.nTracks == 203, "KDH tracks != 203\n");
-        ok &= my_assert (khd.nHeads == 2, "KDH heads != 2\n");
-        ok &= my_assert (khd.nSectors == 12, "KDH sectors != 12\n");
-        ok &= my_assert (khd.def_versions_kept == 0, "defaultVersions != 0\n");
+        ok &= my_assert (khd.nDisks == 1, "%s: Expect single disk system\n", __func__);
+        ok &= my_assert (khd.nTracks == 203, "%s: KDH tracks != 203\n", __func__);
+        ok &= my_assert (khd.nHeads == 2, "%s: KDH heads != 2\n", __func__);
+        ok &= my_assert (khd.nSectors == 12, "%s: KDH sectors != 12\n", __func__);
+        ok &= my_assert (khd.def_versions_kept == 0, "%s: defaultVersions != 0\n", __func__);
     }
 
-    /* Count free pages in bit table */
+    // Count free pages in bit table
     nfree = 0;
-    last = doubledisk ? NPAGES * 2 : NPAGES;
-    for (page = 0; page < last; page += 1)
+    const page_t last = doubledisk ? NPAGES * 2 : NPAGES;
+    for (page_t page = 0; page < last; page++)
         nfree += getBT(page) ^ 1;
     ok &= my_assert (nfree == khd.free_pages,
-    "Bit table count %d doesn't match KDH free pages %d\n", nfree, khd.free_pages);
+        "%s: Bit table count %d doesn't match KDH free pages %d\n",
+        __func__, nfree, khd.free_pages);
 
-    /* Count free pages in actual image */
+    // Count free pages in actual image
     nfree = 0;
-    for (page = 0; page < last; page += 1)
+    for (page_t page = 0; page < last; page++)
         nfree += is_free_page(page);
 
-    ok &= my_assert ((nfree == khd.free_pages),
-    "Actual free page count %d doesn't match KDH value %d\n",
-    nfree, khd.free_pages);
+    ok &= my_assert (nfree == khd.free_pages,
+        "%s: Actual free page count %d doesn't match KDH value %d\n",
+        __func__, nfree, khd.free_pages);
+
     return ok;
 }
 
@@ -1022,8 +1064,14 @@ void my_assert_or_die(int flag, const char *errmsg, ...)
 
 void swabit(char *data, size_t count)
 {
-    my_assert_or_die ((count & 1) == 0 && ((size_t)data & 1) == 0,
-    "%s: Called with unaligned values\n", __func__);
+    my_assert_or_die((count & 1) == 0 && ((size_t)data & 1) == 0,
+        "%s: Called with unaligned size (%u)\n",
+        __func__, count);
+
+    my_assert_or_die(((size_t)data & 1) == 0,
+        "%s: Called with unaligned data (%p)\n",
+        __func__, (void*)data);
+
     count /= 2;
     word* d = (word *) data;
     while (count--) {
