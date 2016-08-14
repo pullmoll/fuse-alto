@@ -145,10 +145,8 @@ typedef struct afs_fileinfo_s {
     char name[FNLEN+2];             //!< File name
     struct stat st;                 //!< Status
     page_t leader_page_vda;         //!< Leader page of this file
-    size_t npages;                  //!< Number of pages in ::pages
-    word* pages;                    //!< Array of page numbers of the file
     size_t nchildren;               //!< Number of child nodes
-    struct afs_fileinfo_s** children; //!< Array of pointers to the child nodes
+    struct afs_fileinfo_s** child;  //!< Array of pointers to the child nodes
 }   afs_fileinfo_t;
 
 /**
@@ -194,12 +192,13 @@ extern void setBT(page_t page, int val);
 
 extern int delete_file(afs_fileinfo_t* info);
 extern int rename_file(afs_fileinfo_t* info, const char* newname);
+extern int truncate_file(afs_fileinfo_t* info, off_t offset);
 extern int statvfs_kdh(struct statvfs* vfs);
 
 extern void freeinfo(afs_fileinfo_t* node);
 extern int makeinfo_all();
 extern int makeinfo_file(afs_fileinfo_t* parent, int leader_page_vda);
-extern afs_fileinfo_t* get_fileinfo(const char* path);
+extern afs_fileinfo_t* find_fileinfo(const char* path);
 
 extern void read_page(page_t filepage, char* data, size_t size = PAGESZ);
 extern size_t read_file(page_t leader_page_vda, char* data, size_t size, off_t offs = 0);

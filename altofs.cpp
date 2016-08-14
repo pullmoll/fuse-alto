@@ -283,8 +283,6 @@ page_t alloc_page(afs_fileinfo_t* info, page_t filepage)
         return 0;
     }
 
-    info->pages = (word*)realloc(info->pages, (info->npages + 1) * sizeof(word));
-    info->pages[info->npages] = filepage;
     khd.free_pages -= 1;
     setBT(filepage, 1);
     afs_label_t* lthis = page_label(filepage);
@@ -362,7 +360,7 @@ page_t find_file(const char *name)
  */
 int make_sysdir_array(afs_dv_t*& array, size_t& count)
 {
-    afs_fileinfo_t* info = get_fileinfo("SysDir");
+    afs_fileinfo_t* info = find_fileinfo("SysDir");
 
     if (!info)
         return -ENOENT;
@@ -443,7 +441,7 @@ int save_sysdir_array(afs_dv_t* array, size_t count)
     if (!array)
         return -ENOENT;
 
-    afs_fileinfo_t* info = get_fileinfo("SysDir");
+    afs_fileinfo_t* info = find_fileinfo("SysDir");
     if (!info)
         return -ENOENT;
 
@@ -599,19 +597,20 @@ int delete_file(afs_fileinfo_t* info)
     memset(&lp->dir_fp_hint, 0, sizeof(lp->dir_fp_hint));
     memset(&lp->last_page_hint, 0, sizeof(lp->last_page_hint));
 
-    page_t filepage = info->leader_page_vda;
+    page_t page = info->leader_page_vda;
     afs_label_t* l;
     // mark the file pages as unused
-    int freed = 0;
-    while (filepage != 0) {
-        l = page_label(filepage);
+    word freed = 0;
+    while (page != 0) {
+        l = page_label(page);
+        setBT(page, 0);
         l->fid_file = 0xffff;
         l->fid_dir = 0xffff;
         l->fid_id = 0xffff;
         freed++;
         if (l->nbytes < PAGESZ)
             break;
-        filepage = rda_to_vda(l->next_rda);
+        page = rda_to_vda(l->next_rda);
     }
     khd.free_pages += freed;
 
@@ -619,10 +618,10 @@ int delete_file(afs_fileinfo_t* info)
     afs_fileinfo_t* parent = info->parent;
     freeinfo(info);
     for (size_t i = 0; i < parent->nchildren; i++) {
-        if (parent->children[i] != info)
+        if (parent->child[i] != info)
             continue;
         for (size_t j = i; j < parent->nchildren - 1; j++)
-            parent->children[j] = parent->children[j+1];
+            parent->child[j] = parent->child[j+1];
         parent->nchildren -= 1;
         break;
     }
@@ -630,6 +629,12 @@ int delete_file(afs_fileinfo_t* info)
     return remove_sysdir_entry(fn+1);
 }
 
+/**
+ * @brief Rename file in the tree and in SysDir
+ * @param info pointer to afs_fileinfo_t describing the file
+ * @param newname new filename
+ * @return 0 on success, or -ENOENT on error
+ */
 int rename_file(afs_fileinfo_t* info, const char* newname)
 {
     afs_leader_t* lp = page_leader(info->leader_page_vda);
@@ -653,16 +658,86 @@ int rename_file(afs_fileinfo_t* info, const char* newname)
     return rename_sysdir_entry(fn+1, newname);
 }
 
+/**
+ * @brief Truncate an (existing) file at the given offset
+ * @param info pointer to afs_fileinfo_t describing the file
+ * @param offset new size of the file
+ * @return 0 on success, or -ENOENT on error
+ */
+int truncate_file(afs_fileinfo_t* info, off_t offset)
+{
+    afs_leader_t* lp = page_leader(info->leader_page_vda);
+    afs_label_t* l = page_label(info->leader_page_vda);
+
+    char fn[FNLEN+2];
+    filename_to_string(fn, lp->filename);
+
+    size_t size = info->st.st_size - offset;
+    page_t page = rda_to_vda(l->next_rda);
+    off_t pos = 0;
+    word freed = 0;
+    while (page && size > 0) {
+        l = page_label(page);
+        if (pos >= offset) {
+            // free this page
+#if defined(DEBUG)
+            printf("%s: pos=0x%06lx page=%-5ld (free page)\n",
+                __func__, pos, page);
+#endif
+            setBT(page, 0);
+            l->fid_file = 0xffff;
+            l->fid_dir = 0xffff;
+            l->fid_id = 0xffff;
+            freed++;
+            size -= l->nbytes;
+            pos += PAGESZ;
+        } else if (pos + PAGESZ > offset) {
+            // shrink this page
+            l->nbytes = offset - pos;
+#if defined(DEBUG)
+            printf("%s: pos=0x%06lx page=%-5ld (shrink to 0x%03x bytes)\n",
+                __func__, pos, page, l->nbytes);
+#endif
+            size -= l->nbytes;
+            pos += l->nbytes;
+            break;  // we're done
+        } else if (0 == l->next_rda) {
+            // allocate a new page
+            page = alloc_page(info, page);
+            if (0 == page) {
+                // No free page found
+                khd.free_pages += freed;
+                info->st.st_size = pos;
+                return -ENOSPC;
+            }
+#if defined(DEBUG)
+            printf("%s: pos=0x%06lx page=%-5ld (allocated new page)\n",
+                __func__, pos, page);
+#endif
+            // FIXME: should we fill it with zeroes?
+        } else {
+#if defined(DEBUG)
+            printf("%s: pos=0x%06lx page=%-5ld (seeking to 0x%06lx)\n",
+                __func__, pos, page, offset);
+#endif
+            size -= PAGESZ;
+            pos += PAGESZ;
+        }
+        page = rda_to_vda(l->next_rda);
+    }
+    khd.free_pages += freed;
+
+    return 0;
+}
+
 void freeinfo(afs_fileinfo_t* node)
 {
     if (!node)
         return;
     for (size_t i = 0; i < node->nchildren; i++)
-        freeinfo(node->children[i]);
-    if (node->children)
-        free(node->children);
-    if (node->pages)
-        free(node->pages);
+        freeinfo(node->child[i]);
+    if (node->child)
+        free(node->child);
     delete node;
 }
 
@@ -749,25 +824,6 @@ int makeinfo_file(afs_fileinfo_t* parent, int leader_page_vda)
     }
     info->st.st_blocks = (info->st.st_size + PAGESZ - 1) / PAGESZ;
 
-    // Create the list of file pages for random access
-    info->npages = npages;
-    info->pages = (word *)malloc(sizeof(word) * npages);
-    my_assert(info->pages != 0,
-        "%s: malloc(%u) failed for %s\n",
-        __func__, sizeof(word) * npages, &fn[1]);
-    if (!info->pages) {
-        delete info;
-        return -ENOMEM;
-    }
-
-    l = page_label(leader_page_vda);
-    npages = 0;
-    while (l->next_rda != 0) {
-        const page_t filepage = rda_to_vda(l->next_rda);
-        info->pages[npages++] = filepage;
-        l = page_label(filepage);
-    }
-
     // Fill more struct stat info
     alto_time_to_time(lp->created, &info->st.st_ctime);
     alto_time_to_time(lp->written, &info->st.st_mtime);
@@ -775,18 +831,17 @@ int makeinfo_file(afs_fileinfo_t* parent, int leader_page_vda)
     info->st.st_nlink = 0;
 
     // Make a new entry in the parent's list of children
-    size_t size = (parent->nchildren + 1) * sizeof(*parent->children);
-    parent->children = (afs_fileinfo_t **) realloc(parent->children, size);
-    my_assert(parent->children != 0,
+    size_t size = (parent->nchildren + 1) * sizeof(*parent->child);
+    parent->child = (afs_fileinfo_t **) realloc(parent->child, size);
+    my_assert(parent->child != 0,
         "%s: realloc(...,%u) failed for %s\n",
         __func__, size, &fn[1]);
-    if (!parent->children) {
-        free(info->pages);
+    if (!parent->child) {
         delete info;
         return -ENOMEM;
     }
 
-    parent->children[parent->nchildren] = info;
+    parent->child[parent->nchildren] = info;
     parent->nchildren += 1;
     parent->st.st_nlink++;
     return 0;
@@ -797,7 +852,7 @@ int makeinfo_file(afs_fileinfo_t* parent, int leader_page_vda)
  * @param path file name with leading path (i.e. "/" prepended)
  * @return pointer to afs_fileinfo_t for the entry, or NULL on error
  */
-afs_fileinfo_t* get_fileinfo(const char* path)
+afs_fileinfo_t* find_fileinfo(const char* path)
 {
     if (!root_dir)
         return NULL;
@@ -809,7 +864,7 @@ afs_fileinfo_t* get_fileinfo(const char* path)
         path++;
 
     for (size_t i = 0; i < root_dir->nchildren; i++) {
-        afs_fileinfo_t* node = root_dir->children[i];
+        afs_fileinfo_t* node = root_dir->child[i];
         if (!node)
             continue;
         if (!strcmp(node->name, path))
@@ -853,20 +908,20 @@ void write_page(page_t filepage, const char* data, size_t size)
 size_t read_file(page_t leader_page_vda, char* data, size_t size, off_t offs)
 {
     afs_label_t* l = page_label(leader_page_vda);
-    page_t filepage = rda_to_vda(l->next_rda);
+    page_t page = rda_to_vda(l->next_rda);
     size_t done = 0;
     off_t pos = 0;
-    while (filepage && size > 0) {
-        l = page_label(filepage);
+    while (page && size > 0) {
+        l = page_label(page);
         size_t nbytes = size < l->nbytes ? size : l->nbytes;
         if (pos >= offs) {
             // aligned page read
 #if defined(DEBUG)
-            printf("%s: pos=0x%06lx filepage=%-5ld nbytes=0x%03lx\n",
-                __func__, pos, filepage, nbytes);
+            printf("%s: pos=0x%06lx page=%-5ld nbytes=0x%03lx\n",
+                __func__, pos, page, nbytes);
 #endif
-            read_page(filepage, data, nbytes);
-            filepage = rda_to_vda(l->next_rda);
+            read_page(page, data, nbytes);
+            page = rda_to_vda(l->next_rda);
             data += nbytes;
             done += nbytes;
             size -= nbytes;
@@ -875,19 +930,19 @@ size_t read_file(page_t leader_page_vda, char* data, size_t size, off_t offs)
             off_t from = offs - pos;
             nbytes -= from;
 #if defined(DEBUG)
-            printf("%s: pos=0x%06lx filepage=%-5ld nbytes=0x%03lx from=0x%03lx\n",
-                __func__, pos, filepage, nbytes, from);
+            printf("%s: pos=0x%06lx page=%-5ld nbytes=0x%03lx from=0x%03lx\n",
+                __func__, pos, page, nbytes, from);
 #endif
             char buff[PAGESZ];
-            read_page(filepage, buff, PAGESZ);
+            read_page(page, buff, PAGESZ);
             memcpy(data, buff + from, nbytes);
             data += nbytes;
             done += nbytes;
             size -= nbytes;
         } else {
 #if defined(DEBUG)
-            printf("%s: pos=0x%06lx filepage=%-5ld (seeking to 0x%06lx)\n",
-                __func__, pos, filepage, offs);
+            printf("%s: pos=0x%06lx page=%-5ld (seeking to 0x%06lx)\n",
+                __func__, pos, page, offs);
 #endif
         }
         pos += nbytes;
@@ -911,25 +966,25 @@ size_t write_file(page_t leader_page_vda, const char* data, size_t size, off_t o
 
     char fn[FNLEN+2];
     filename_to_string(fn, lp->filename);
-    afs_fileinfo_t* info = get_fileinfo(fn+1);
+    afs_fileinfo_t* info = find_fileinfo(fn+1);
     my_assert_or_die(info != NULL,
-        "%s: The get_fileinfo(\"%s\") call returned NULL\n",
+        "%s: The find_fileinfo(\"%s\") call returned NULL\n",
         __func__, fn+1);
 
-    page_t filepage = rda_to_vda(l->next_rda);
+    page_t page = rda_to_vda(l->next_rda);
     size_t done = 0;
     off_t pos = 0;
-    while (filepage && size > 0) {
-        l = page_label(filepage);
+    while (page && size > 0) {
+        l = page_label(page);
         size_t nbytes = size < PAGESZ ? size : PAGESZ;
         if (pos >= offs && l->nbytes == PAGESZ) {
             // aligned page write
             l->nbytes = nbytes;
 #if defined(DEBUG)
-            printf("%s: pos=0x%06lx filepage=%-5ld nbytes=0x%03lx size=0x%06lx\n",
-                __func__, offs, filepage, nbytes, size);
+            printf("%s: pos=0x%06lx page=%-5ld nbytes=0x%03lx size=0x%06lx\n",
+                __func__, offs, page, nbytes, size);
 #endif
-            write_page(filepage, data, nbytes);
+            write_page(page, data, nbytes);
             data += nbytes;
             done += nbytes;
             size -= nbytes;
@@ -938,33 +993,29 @@ size_t write_file(page_t leader_page_vda, const char* data, size_t size, off_t o
             off_t to = l->nbytes;
             nbytes = size < (size_t)(PAGESZ - to) ? size : (size_t)(PAGESZ - to);
             char buff[PAGESZ];
-            read_page(filepage, buff, PAGESZ);  // get the current page
+            read_page(page, buff, PAGESZ);  // get the current page
 #if defined(DEBUG)
-            printf("%s: pos=0x%06lx filepage=%-5ld nbytes=0x%03lx size=0x%06lx to=0x%03lx\n",
-                __func__, pos, filepage, nbytes, size, to);
+            printf("%s: pos=0x%06lx page=%-5ld nbytes=0x%03lx size=0x%06lx to=0x%03lx\n",
+                __func__, pos, page, nbytes, size, to);
 #endif
             memcpy(buff + to, data, nbytes);
-            write_page(filepage, buff, PAGESZ); // write the modified page
+            write_page(page, buff, PAGESZ); // write the modified page
             l->nbytes = to + nbytes;
             data += nbytes;
             done += nbytes;
             size -= nbytes;
         } else {
 #if defined(DEBUG)
-            printf("%s: pos=0x%06lx filepage=%-5ld (seeking to 0x%06lx)\n",
-                __func__, pos, filepage, offs);
+            printf("%s: pos=0x%06lx page=%-5ld (seeking to 0x%06lx)\n",
+                __func__, pos, page, offs);
 #endif
         }
         pos += PAGESZ;
         if (size > 0 && 0 == l->next_rda) {
             // Need to allocate a new page
-#if defined(DEBUG)
-            printf("%s: allocate new page after %ld\n",
-                __func__, filepage);
-#endif
-            filepage = alloc_page(info, filepage);
+            page = alloc_page(info, page);
         }
-        filepage = rda_to_vda(l->next_rda);
+        page = rda_to_vda(l->next_rda);
     }
     info->st.st_size = offs + done;
     return done;

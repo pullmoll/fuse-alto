@@ -24,14 +24,14 @@ static int multithreaded = 1;
 static int getattr_alto(const char *path, struct stat *stbuf)
 {
     memset(stbuf, 0, sizeof(struct stat));
-    afs_fileinfo_t* info = get_fileinfo(path);
+    afs_fileinfo_t* info = find_fileinfo(path);
 
     if (!info)
         return -ENOENT;
     struct fuse_context* ctx = fuse_get_context();
     info->st.st_uid = ctx->uid;
     info->st.st_gid = ctx->gid;
-    // info->st.st_mode &= ctx->umask;
+    info->st.st_mode &= ~ctx->umask;
 
     memcpy(stbuf, &info->st, sizeof(*stbuf));
     return 0;
@@ -40,7 +40,7 @@ static int getattr_alto(const char *path, struct stat *stbuf)
 static int readdir_alto(const char *path, void *buf, fuse_fill_dir_t filler, off_t offset, struct fuse_file_info *fi)
 {
 
-    afs_fileinfo_t* info = get_fileinfo(path);
+    afs_fileinfo_t* info = find_fileinfo(path);
     if (!info)
         return -ENOENT;
 
@@ -53,12 +53,12 @@ static int readdir_alto(const char *path, void *buf, fuse_fill_dir_t filler, off
     filler(buf, "..", NULL, 0);
 
     for (size_t i = 0; i < info->nchildren; i++) {
-        afs_fileinfo_t* child = info->children[i];
+        afs_fileinfo_t* child = info->child[i];
         if (!child)
             continue;
         child->st.st_uid = ctx->uid;
         child->st.st_gid = ctx->gid;
-        // child->st.st_mode &= ctx->umask;
+        child->st.st_mode &= ~ctx->umask;
         if (filler(buf, child->name, &child->st, 0))
             break;
     }
@@ -68,7 +68,7 @@ static int readdir_alto(const char *path, void *buf, fuse_fill_dir_t filler, off
 
 static int open_alto(const char *path, struct fuse_file_info *fi)
 {
-    afs_fileinfo_t* info = get_fileinfo(path);
+    afs_fileinfo_t* info = find_fileinfo(path);
     if (!info)
         return -ENOENT;
     return 0;
@@ -76,7 +76,7 @@ static int open_alto(const char *path, struct fuse_file_info *fi)
 
 static int read_alto(const char *path, char *buf, size_t size, off_t offset, struct fuse_file_info*)
 {
-    afs_fileinfo_t* info = get_fileinfo(path);
+    afs_fileinfo_t* info = find_fileinfo(path);
     if (!info)
         return -ENOENT;
 
@@ -84,15 +84,12 @@ static int read_alto(const char *path, char *buf, size_t size, off_t offset, str
         return 0;
 
     size_t done = read_file(info->leader_page_vda, buf, size, offset);
-#if defined(DEBUG)
-    printf("%s: path=%s size=%ld offset=%lu done=%ld\n", __func__, path, size, offset, done);
-#endif
     return done;
 }
 
 static int write_alto(const char *path, const char *buf, size_t size, off_t offset, struct fuse_file_info*)
 {
-    afs_fileinfo_t* info = get_fileinfo(path);
+    afs_fileinfo_t* info = find_fileinfo(path);
     if (!info)
         return -ENOENT;
 
@@ -100,9 +97,20 @@ static int write_alto(const char *path, const char *buf, size_t size, off_t offs
     return done;
 }
 
+static int truncate_alto(const char* path, off_t offset)
+{
+    afs_fileinfo_t* info = find_fileinfo(path);
+    if (!info) {
+        // TODO: create new file entry
+        return -ENOENT;
+    }
+    int res = truncate_file(info, offset);
+    return res;
+}
+
 static int unlink_alto(const char *path)
 {
-    afs_fileinfo_t* info = get_fileinfo(path);
+    afs_fileinfo_t* info = find_fileinfo(path);
     if (!info)
         return -ENOENT;
     return delete_file(info);
@@ -110,7 +118,7 @@ static int unlink_alto(const char *path)
 
 static int rename_alto(const char *path, const char* newname)
 {
-    afs_fileinfo_t* info = get_fileinfo(path);
+    afs_fileinfo_t* info = find_fileinfo(path);
     if (!info)
         return -ENOENT;
     return rename_file(info, newname);
@@ -191,15 +199,15 @@ void* init_alto(fuse_conn_info* info)
     if (vflag > 2) {
         printf("%s: root_dir.nchildren=%lu\n", __func__, root_dir->nchildren);
         for (size_t i = 0; i < root_dir->nchildren; i++) {
-            afs_fileinfo_t* node = root_dir->children[i];
-            if (!node)
+            afs_fileinfo_t* child = root_dir->child[i];
+            if (!child)
                 continue;
             struct tm tm_ctime;
-            memcpy(&tm_ctime, localtime(&node->st.st_ctime), sizeof(tm_ctime));
+            memcpy(&tm_ctime, localtime(&child->st.st_ctime), sizeof(tm_ctime));
             char ctime[40];
             strftime(ctime, sizeof(ctime), "%Y-%m-%d %H:%M:%S", &tm_ctime);
-            printf("%-40s %08o %5lu %9lu %s\n", node->name, node->st.st_mode,
-                node->st.st_ino, node->st.st_size, ctime);
+            printf("%-40s %08o %5lu %9lu %s\n", child->name, child->st.st_mode,
+                child->st.st_ino, child->st.st_size, ctime);
         }
     }
 #endif
@@ -304,6 +312,7 @@ int main(int argc, char *argv[])
     fuse_ops.open = open_alto;
     fuse_ops.read = read_alto;
     fuse_ops.write = write_alto;
+    fuse_ops.truncate = truncate_alto;
     fuse_ops.readdir = readdir_alto;
     fuse_ops.statfs = statfs_alto;
     fuse_ops.init = init_alto;
