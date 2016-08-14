@@ -179,10 +179,10 @@ extern int verify_headers();
 extern int validate_disk_descriptor();
 extern void fix_disk_descriptor();
 
-extern word rda_to_vda(word rda);
-extern word vda_to_rda(word vda);
+extern page_t rda_to_vda(word rda);
+extern word vda_to_rda(page_t vda);
 
-extern word alloc_page(word prev);
+extern page_t alloc_page(afs_fileinfo_t* info, page_t prev_vda);
 
 extern void filename_to_string(char *dst, const char *src);
 extern void string_to_filename(char *dst, const char *src);
@@ -202,10 +202,10 @@ extern int makeinfo_file(afs_fileinfo_t* parent, int leader_page_vda);
 extern afs_fileinfo_t* get_fileinfo(const char* path);
 
 extern void read_page(page_t filepage, char* data, size_t size = PAGESZ);
-extern void read_file(page_t leader_page_vda, char* data, size_t size);
+extern size_t read_file(page_t leader_page_vda, char* data, size_t size, off_t offs = 0);
 
 extern void write_page(page_t filepage, const char* data, size_t size);
-extern void write_file(page_t leader_page_vda, const char* data, size_t size);
+extern size_t write_file(page_t leader_page_vda, const char* data, size_t size, off_t offs = 0);
 
 extern int alto_time_to_time(afs_time_t at, time_t* ptime);
 extern int alto_time_to_tm(afs_time_t at, struct tm* ptm);

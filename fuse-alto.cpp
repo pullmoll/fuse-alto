@@ -74,9 +74,8 @@ static int open_alto(const char *path, struct fuse_file_info *fi)
     return 0;
 }
 
-static int read_alto(const char *path, char *buf, size_t size, off_t offset, struct fuse_file_info *fi)
+static int read_alto(const char *path, char *buf, size_t size, off_t offset, struct fuse_file_info*)
 {
-    static __thread char data[PAGESZ];
     afs_fileinfo_t* info = get_fileinfo(path);
     if (!info)
         return -ENOENT;
@@ -84,32 +83,21 @@ static int read_alto(const char *path, char *buf, size_t size, off_t offset, str
     if (offset >= info->st.st_size)
         return 0;
 
-    size_t copied = (off_t)(offset + size) > (off_t)info->st.st_size ?
-        info->st.st_size - offset : size;
+    size_t done = read_file(info->leader_page_vda, buf, size, offset);
+#if defined(DEBUG)
+    printf("%s: path=%s size=%ld offset=%lu done=%ld\n", __func__, path, size, offset, done);
+#endif
+    return done;
+}
 
-    size_t filepage = offset / PAGESZ;
+static int write_alto(const char *path, const char *buf, size_t size, off_t offset, struct fuse_file_info*)
+{
+    afs_fileinfo_t* info = get_fileinfo(path);
+    if (!info)
+        return -ENOENT;
 
-    // sanity check the page number
-    if (filepage >= info->npages)
-        return -EBADF;
-
-    size_t done = 0;
-    while (done < copied) {
-        read_page(info->pages[filepage++], data);
-        size_t offs = offset % PAGESZ;
-        size_t chunk = copied > PAGESZ ? PAGESZ : copied;
-        if (offs && offs + chunk > PAGESZ) {
-            // clip read chunk to page boundary
-            chunk = PAGESZ - offset;
-            memcpy(buf, data + offs, PAGESZ - offset);
-        } else {
-            memcpy(buf, data + offs, chunk);
-        }
-        done += chunk;
-        offset += chunk;
-        buf += chunk;
-    }
-    return copied;
+    size_t done = write_file(info->leader_page_vda, buf, size, offset);
+    return done;
 }
 
 static int unlink_alto(const char *path)
@@ -175,18 +163,20 @@ void* init_alto(fuse_conn_info* info)
     little.e = 1;
 
 #if defined(DEBUG)
-    fprintf(stdout, "%s: fuse_conn_info* = %p\n", __func__, info);
-    fprintf(stdout, "%s:   proto_major             : %u\n", __func__, info->proto_major);
-    fprintf(stdout, "%s:   proto_minor             : %u\n", __func__, info->proto_minor);
-    fprintf(stdout, "%s:   async_read              : %u\n", __func__, info->async_read);
-    fprintf(stdout, "%s:   max_write               : %u\n", __func__, info->max_write);
-    fprintf(stdout, "%s:   max_readahead           : %u\n", __func__, info->max_readahead);
-    fprintf(stdout, "%s:   capable                 : %#x\n", __func__, info->capable);
-    fprintf(stdout, "%s:   capable.flags           : %s\n", __func__, fuse_cap(info->capable));
-    fprintf(stdout, "%s:   want                    : %#x\n", __func__, info->want);
-    fprintf(stdout, "%s:   want.flags              : %s\n", __func__, fuse_cap(info->want));
-    fprintf(stdout, "%s:   max_background          : %u\n", __func__, info->max_background);
-    fprintf(stdout, "%s:   congestion_threshold    : %u\n", __func__, info->congestion_threshold);
+    if (vflag > 2) {
+      printf("%s: fuse_conn_info* = %p\n", __func__, (void*)info);
+      printf("%s:   proto_major             : %u\n", __func__, info->proto_major);
+      printf("%s:   proto_minor             : %u\n", __func__, info->proto_minor);
+      printf("%s:   async_read              : %u\n", __func__, info->async_read);
+      printf("%s:   max_write               : %u\n", __func__, info->max_write);
+      printf("%s:   max_readahead           : %u\n", __func__, info->max_readahead);
+      printf("%s:   capable                 : %#x\n", __func__, info->capable);
+      printf("%s:   capable.flags           : %s\n", __func__, fuse_cap(info->capable));
+      printf("%s:   want                    : %#x\n", __func__, info->want);
+      printf("%s:   want.flags              : %s\n", __func__, fuse_cap(info->want));
+      printf("%s:   max_background          : %u\n", __func__, info->max_background);
+      printf("%s:   congestion_threshold    : %u\n", __func__, info->congestion_threshold);
+    }
 #endif
 
     // FIXME: Where do I really get the "device" to mount?
@@ -198,17 +188,19 @@ void* init_alto(fuse_conn_info* info)
     makeinfo_all();
 
 #if defined(DEBUG)
-    printf("%s: root_dir.nchildren=%u\n", __func__, root_dir->nchildren);
-    for (size_t i = 0; i < root_dir->nchildren; i++) {
-        afs_fileinfo_t* node = root_dir->children[i];
-        if (!node)
-            continue;
-        struct tm tm_ctime;
-        memcpy(&tm_ctime, localtime(&node->st.st_ctime), sizeof(tm_ctime));
-        char ctime[40];
-        strftime(ctime, sizeof(ctime), "%Y-%m-%d %H:%M:%S", &tm_ctime);
-        printf("%-40s %08o %5u %9lu %s\n", node->name, node->st.st_mode,
-            node->st.st_ino, node->st.st_size, ctime);
+    if (vflag > 2) {
+        printf("%s: root_dir.nchildren=%lu\n", __func__, root_dir->nchildren);
+        for (size_t i = 0; i < root_dir->nchildren; i++) {
+            afs_fileinfo_t* node = root_dir->children[i];
+            if (!node)
+                continue;
+            struct tm tm_ctime;
+            memcpy(&tm_ctime, localtime(&node->st.st_ctime), sizeof(tm_ctime));
+            char ctime[40];
+            strftime(ctime, sizeof(ctime), "%Y-%m-%d %H:%M:%S", &tm_ctime);
+            printf("%-40s %08o %5lu %9lu %s\n", node->name, node->st.st_mode,
+                node->st.st_ino, node->st.st_size, ctime);
+        }
     }
 #endif
 
@@ -311,6 +303,7 @@ int main(int argc, char *argv[])
     fuse_ops.rename = rename_alto;
     fuse_ops.open = open_alto;
     fuse_ops.read = read_alto;
+    fuse_ops.write = write_alto;
     fuse_ops.readdir = readdir_alto;
     fuse_ops.statfs = statfs_alto;
     fuse_ops.init = init_alto;
