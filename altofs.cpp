@@ -261,28 +261,28 @@ page_t alloc_page(afs_fileinfo_t* info, page_t filepage)
     my_assert_or_die(lprev != NULL,
         "%s: No previous page label (%ld)\n", __func__, filepage);
 
-    // Search filepage up to the number of BT bits -1
-    while (filepage < maxpage) {
-        if (0 == getBT(filepage))
-            goto page_found;
-        filepage++;
+    // Search a free page close to the current filepage
+    page_t dist = 1;
+    while (dist < maxpage) {
+        if (filepage + dist < maxpage && 0 == getBT(filepage + dist)) {
+            filepage += dist;
+            break;
+        }
+        if (filepage - dist > 1 && 0 == getBT(filepage - dist)) {
+            filepage -= dist;
+            break;
+        }
+        dist++;
     }
 
-    // Search filepage from 2 up to the previous VDA
-    filepage = 2;
-    while (filepage < prev_vda) {
-        if (0 == getBT(filepage))
-            goto page_found;
-        filepage++;
-    }
-
-    // No free page found
+    if (getBT(filepage)) {
+        // No free page found
 #if defined(DEBUG)
-    printf("%s: no free page found\n", __func__);
+        printf("%s: no free page found\n", __func__);
 #endif
-    return 0;
+        return 0;
+    }
 
-page_found:
     info->pages = (word*)realloc(info->pages, (info->npages + 1) * sizeof(word));
     info->pages[info->npages] = filepage;
     khd.free_pages -= 1;
