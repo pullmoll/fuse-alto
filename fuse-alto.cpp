@@ -13,7 +13,13 @@
 #include <stdint.h>
 #include "altofs.h"
 
-const char* filenames = NULL;
+static char* mountpoint = NULL;
+static char* filenames = NULL;
+static struct fuse_chan* chan = NULL;
+static struct fuse* fuse = NULL;
+static struct fuse_operations fuse_ops;
+static int foreground = 0;
+static int multithreaded = 1;
 
 static int getattr_alto(const char *path, struct stat *stbuf)
 {
@@ -22,6 +28,10 @@ static int getattr_alto(const char *path, struct stat *stbuf)
 
     if (!info)
         return -ENOENT;
+    struct fuse_context* ctx = fuse_get_context();
+    info->st.st_uid = ctx->uid;
+    info->st.st_gid = ctx->gid;
+    // info->st.st_mode &= ctx->umask;
 
     memcpy(stbuf, &info->st, sizeof(*stbuf));
     return 0;
@@ -34,6 +44,11 @@ static int readdir_alto(const char *path, void *buf, fuse_fill_dir_t filler, off
     if (!info)
         return -ENOENT;
 
+    struct fuse_context* ctx = fuse_get_context();
+    info->st.st_uid = ctx->uid;
+    info->st.st_gid = ctx->gid;
+    // info->st.st_mode &= ctx->umask;
+
     filler(buf, ".", &info->st, 0);
     filler(buf, "..", NULL, 0);
 
@@ -41,6 +56,9 @@ static int readdir_alto(const char *path, void *buf, fuse_fill_dir_t filler, off
         afs_fileinfo_t* child = info->children[i];
         if (!child)
             continue;
+        child->st.st_uid = ctx->uid;
+        child->st.st_gid = ctx->gid;
+        // child->st.st_mode &= ctx->umask;
         if (filler(buf, child->name, &child->st, 0))
             break;
     }
@@ -197,30 +215,97 @@ void* init_alto(fuse_conn_info* info)
     return root_dir;
 }
 
-static struct fuse_operations fuse_ops;
-
-int usage(char* program)
+int usage(const char* program)
 {
-    fprintf(stderr, "usage: %s <mountpoint> [options] <disk image file(s)>\n", program);
-    fprintf(stderr, "The options are the FUSE options listed below.\n");
-    fprintf(stderr, "The last parameter is an Alto disk image file, or two\n");
-    fprintf(stderr, "of them separated by a colon (:) for double disk images.\n");
-    char help[] = "-h";
+    const char* prog = strrchr(program, '/');
+    prog = prog ? prog + 1 : program;
+    fprintf(stderr, "usage: %s <mountpoint> [options] <disk image file(s)>\n", prog);
+    fprintf(stderr, "Where [options] can be one or more of\n");
+    fprintf(stderr, "    -v|--verbose           set verbose mode (can be repeated)\n");
+    char name[] = "fuse-alto";
+    char help[] = "-ho";
     char* argv[3];
     int argc = 0;
-    argv[argc++] = program;
+    argv[argc++] = name;
     argv[argc++] = help;
     argv[argc] = NULL;
-    return fuse_main(argc, argv, &fuse_ops, NULL);
+    fuse_main(argc, argv, &fuse_ops, NULL);
+    fprintf(stderr, "\n");
+    fprintf(stderr, "The last parameter is an Alto disk image file, or two\n");
+    fprintf(stderr, "of them separated by a comma for double disk images.\n");
+    return 0;
+}
+
+int fuse_opt_alto(void* data, const char* arg, int key, struct fuse_args* outargs)
+{
+#if defined(DEBUG)
+    printf("%s: key=%d arg=%s\n", __func__, key, arg);
+#endif
+    switch (key) {
+    case FUSE_OPT_KEY_OPT:
+        if (!strcmp(arg, "-v"))
+            vflag += 1;
+        if (!strcmp(arg, "-f"))
+            foreground = 1;
+        if (!strcmp(arg, "-s"))
+            multithreaded = 0;
+        break;
+    case FUSE_OPT_KEY_NONOPT:
+        if (NULL == mountpoint) {
+            mountpoint = strdup(arg);
+            return 0;
+        }
+        if (NULL == filenames) {
+            filenames = strdup(arg);
+            return 0;
+        }
+        return -1;
+    }
+    return 0;
+}
+
+void shutdown_fuse()
+{
+    if (fuse) {
+        if (vflag)
+            printf("%s: removing signal handlers\n", __func__);
+        fuse_remove_signal_handlers(fuse_get_session(fuse));
+    }
+    if (mountpoint && chan) {
+        if (vflag)
+            printf("%s: unmounting %s\n", __func__, mountpoint);
+        fuse_unmount(mountpoint, chan);
+        mountpoint = 0;
+        chan = 0;
+    }
+    if (fuse) {
+        if (vflag)
+            printf("%s: destroying fuse (%p)\n", __func__, (void*)fuse);
+        fuse_destroy(fuse);
+        fuse = 0;
+    }
+    if (root_dir) {
+        if (vflag)
+            printf("%s: freeing internal structures\n", __func__);
+        freeinfo(root_dir);
+        root_dir = 0;
+    }
+    if (filenames) {
+        free(filenames);
+        filenames = 0;
+    }
+    if (mountpoint) {
+        free(mountpoint);
+        mountpoint = 0;
+    }
 }
 
 int main(int argc, char *argv[])
 {
     memset(&fuse_ops, 0, sizeof(fuse_ops));
-    if (argc < 3) {
+    if (argc < 3)
         return usage(argv[0]);
-    }
-    filenames = argv[--argc];
+
     fuse_ops.getattr = getattr_alto;
     fuse_ops.unlink = unlink_alto;
     fuse_ops.rename = rename_alto;
@@ -229,5 +314,36 @@ int main(int argc, char *argv[])
     fuse_ops.readdir = readdir_alto;
     fuse_ops.statfs = statfs_alto;
     fuse_ops.init = init_alto;
-    return fuse_main(argc, argv, &fuse_ops, NULL);
+
+    atexit(shutdown_fuse);
+
+    struct fuse_args args = FUSE_ARGS_INIT(argc, argv);
+    int res = fuse_opt_parse(&args, NULL, NULL, fuse_opt_alto);
+
+    chan = fuse_mount(mountpoint, &args);
+    if (!chan) {
+        perror("fuse_mount()");
+        exit(1);
+    }
+
+    fuse = fuse_new(chan, &args, &fuse_ops, sizeof(fuse_ops), NULL);
+    if (!fuse) {
+        perror("fuse_new()");
+        exit(2);
+    }
+
+    res = fuse_daemonize(foreground);
+    if (res != -1)
+        res = fuse_set_signal_handlers(fuse_get_session(fuse));
+
+    if (res != -1) {
+        if (multithreaded)
+            res = fuse_loop_mt(fuse);
+        else
+            res = fuse_loop(fuse);
+    }
+
+    shutdown_fuse();
+
+    return res;
 }
