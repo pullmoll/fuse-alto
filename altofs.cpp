@@ -19,7 +19,7 @@ static afs_khd_t khd;
 /**
  * @brief bitmap for pages allocated
  */
-static word *bit_table = 0;
+static word *bit_table = NULL;
 
 /**
  * @brief number of bits in bit_table
@@ -29,7 +29,7 @@ static page_t bit_count = 0;
 /**
  * @brief storage for the disk image for dp0 and dp1
  */
-static afs_page_t disk[NPAGES * 2];
+static afs_page_t* disk = NULL;
 
 /**
  * @brief doubledisk is true, if both of dp0 and dp1 are loaded
@@ -113,16 +113,18 @@ int read_disk_file(const char* name)
     dp1name = strchr(dp0name, ',');
     if (dp1name)
         *dp1name++ = '\0';
-    ok = read_single_disk(dp0name, &disk[0]);
-    if (!ok)
-        return -EBADF;
     doubledisk = dp1name != NULL;
-    if (doubledisk) {
+
+    disk = (afs_page_t*) calloc(2*NPAGES, sizeof(afs_page_t));
+    my_assert_or_die(disk != NULL,
+        "%s: disk calloc(%d,%d) failed",
+        __func__, 2*NPAGES, sizeof(afs_page_t));
+
+    ok = read_single_disk(dp0name, &disk[0]);
+    if (ok && doubledisk) {
         ok = read_single_disk(dp1name, &disk[NPAGES]);
-        if (!ok)
-            return -EBADF;
     }
-    return 0;
+    return ok ? 0 : -ENOENT;
 }
 
 /**
@@ -1241,6 +1243,26 @@ void fix_disk_descriptor()
         setBT(page, t ^ 1);
     }
     khd.free_pages = nfree;
+}
+
+/**
+ * @brief Clean up resources at exit.
+ */
+void cleanup_afs()
+{
+    if (root_dir) {
+        free_fileinfo(root_dir);
+        root_dir = NULL;
+    }
+    if (bit_table) {
+        free(bit_table);
+        bit_table = NULL;
+        bit_count = 0;
+    }
+    if (disk) {
+        free(disk);
+        disk = NULL;
+    }
 }
 
 /**

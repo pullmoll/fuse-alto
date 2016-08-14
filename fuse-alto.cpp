@@ -19,7 +19,16 @@ static struct fuse_chan* chan = NULL;
 static struct fuse* fuse = NULL;
 static struct fuse_operations fuse_ops;
 static int foreground = 0;
-static int multithreaded = 0; // multithreaded operation seems buggy (valgrind complains)
+static int multithreaded = 1;
+
+/**
+ * @brief Yet unused list of options
+ * I should switch from using fuse_opt_parse() with
+ * a callback to a list of my own options...
+ */
+static struct fuse_opt opts_alto[] = {
+    FUSE_OPT_END
+};
 
 static int getattr_alto(const char *path, struct stat *stbuf)
 {
@@ -236,13 +245,13 @@ int fuse_opt_alto(void* data, const char* arg, int key, struct fuse_args* outarg
     case FUSE_OPT_KEY_NONOPT:
         if (NULL == mountpoint) {
             mountpoint = arg;
-            return 0;
+            break;
         }
         if (NULL == filenames) {
             filenames = arg;
-            return 0;
+            break;
         }
-        return -1;
+        return 1;
     }
     return 0;
 }
@@ -267,12 +276,7 @@ void shutdown_fuse()
         fuse_destroy(fuse);
         fuse = 0;
     }
-    if (root_dir) {
-        if (vflag)
-            printf("%s: freeing internal structures\n", __func__);
-        free_fileinfo(root_dir);
-        root_dir = 0;
-    }
+    cleanup_afs();
 }
 
 int main(int argc, char *argv[])
@@ -295,7 +299,7 @@ int main(int argc, char *argv[])
     atexit(shutdown_fuse);
 
     struct fuse_args args = FUSE_ARGS_INIT(argc, argv);
-    int res = fuse_opt_parse(&args, NULL, NULL, fuse_opt_alto);
+    int res = fuse_opt_parse(&args, NULL, opts_alto, fuse_opt_alto);
 
     chan = fuse_mount(mountpoint, &args);
     if (!chan) {

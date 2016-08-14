@@ -201,6 +201,7 @@ extern int rename_sysdir_entry(const char *name, const char* newname);
 extern int verify_headers();
 extern int validate_disk_descriptor();
 extern void fix_disk_descriptor();
+extern void cleanup_afs();
 
 extern page_t rda_to_vda(word rda);
 extern word vda_to_rda(page_t vda);
