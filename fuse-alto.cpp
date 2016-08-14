@@ -13,13 +13,13 @@
 #include <stdint.h>
 #include "altofs.h"
 
-static char* mountpoint = NULL;
-static char* filenames = NULL;
+static const char* mountpoint = NULL;
+static const char* filenames = NULL;
 static struct fuse_chan* chan = NULL;
 static struct fuse* fuse = NULL;
 static struct fuse_operations fuse_ops;
 static int foreground = 0;
-static int multithreaded = 1;
+static int multithreaded = 0; // multithreaded operation seems buggy (valgrind complains)
 
 static int getattr_alto(const char *path, struct stat *stbuf)
 {
@@ -193,24 +193,7 @@ void* init_alto(fuse_conn_info* info)
     // verify_headers();
     if (!validate_disk_descriptor())
         fix_disk_descriptor();
-    makeinfo_all();
-
-#if defined(DEBUG)
-    if (vflag > 2) {
-        printf("%s: root_dir.nchildren=%lu\n", __func__, root_dir->nchildren);
-        for (size_t i = 0; i < root_dir->nchildren; i++) {
-            afs_fileinfo_t* child = root_dir->child[i];
-            if (!child)
-                continue;
-            struct tm tm_ctime;
-            memcpy(&tm_ctime, localtime(&child->st.st_ctime), sizeof(tm_ctime));
-            char ctime[40];
-            strftime(ctime, sizeof(ctime), "%Y-%m-%d %H:%M:%S", &tm_ctime);
-            printf("%-40s %08o %5lu %9lu %s\n", child->name, child->st.st_mode,
-                child->st.st_ino, child->st.st_size, ctime);
-        }
-    }
-#endif
+    make_fileinfo();
 
     return root_dir;
 }
@@ -252,11 +235,11 @@ int fuse_opt_alto(void* data, const char* arg, int key, struct fuse_args* outarg
         break;
     case FUSE_OPT_KEY_NONOPT:
         if (NULL == mountpoint) {
-            mountpoint = strdup(arg);
+            mountpoint = arg;
             return 0;
         }
         if (NULL == filenames) {
-            filenames = strdup(arg);
+            filenames = arg;
             return 0;
         }
         return -1;
@@ -287,16 +270,8 @@ void shutdown_fuse()
     if (root_dir) {
         if (vflag)
             printf("%s: freeing internal structures\n", __func__);
-        freeinfo(root_dir);
+        free_fileinfo(root_dir);
         root_dir = 0;
-    }
-    if (filenames) {
-        free(filenames);
-        filenames = 0;
-    }
-    if (mountpoint) {
-        free(mountpoint);
-        mountpoint = 0;
     }
 }
 

@@ -19,7 +19,12 @@ static afs_khd_t khd;
 /**
  * @brief bitmap for pages allocated
  */
-static word *bit_table;
+static word *bit_table = 0;
+
+/**
+ * @brief number of bits in bit_table
+ */
+static page_t bit_count = 0;
 
 /**
  * @brief storage for the disk image for dp0 and dp1
@@ -58,7 +63,25 @@ afs_fileinfo_t* root_dir = NULL;
  */
 afs_leader_t* page_leader(int vda)
 {
-    return (afs_leader_t *)&disk[vda].data[0];
+    afs_leader_t* leader = (afs_leader_t *)&disk[vda].data[0];
+
+#if defined(DEBUG)
+    if (vflag > 3 && leader->proplength > 0) {
+        static afs_leader_t empty = {0,};
+        byte size = leader->proplength;
+        if (leader->propbegin + size > sizeof(leader->leader_props))
+            size = sizeof(leader->leader_props) - leader->propbegin;
+        if (memcmp(leader->leader_props, empty.leader_props, sizeof(leader->leader_props))) {
+            const char* fn = filename_to_string(leader->filename);
+            printf("%s: leader props for page %d (%s)\n", __func__, vda, fn);
+            printf("%s:   propbegin      : %u\n", __func__, leader->propbegin);
+            printf("%s:   proplength     : %u (%u)\n", __func__, size, leader->proplength);
+            printf("%s:   non-zero data found:\n", __func__);
+            dump_memory((char *)leader->leader_props, size);
+        }
+    }
+#endif
+    return leader;
 }
 
 /**
@@ -264,11 +287,11 @@ page_t alloc_page(afs_fileinfo_t* info, page_t filepage)
     // Search a free page close to the current filepage
     page_t dist = 1;
     while (dist < maxpage) {
-        if (filepage + dist < maxpage && 0 == getBT(filepage + dist)) {
+        if (filepage + dist < maxpage && !getBT(filepage + dist)) {
             filepage += dist;
             break;
         }
-        if (filepage - dist > 1 && 0 == getBT(filepage - dist)) {
+        if (filepage - dist > 1 && !getBT(filepage - dist)) {
             filepage -= dist;
             break;
         }
@@ -331,19 +354,18 @@ page_t alloc_page(afs_fileinfo_t* info, page_t filepage)
 page_t find_file(const char *name)
 {
     int i, last;
-    char fn[FNLEN+2];
     afs_label_t* l;
     afs_leader_t* lp;
 
-    /* use linear search ! */
+    // Use linear search !
     last = doubledisk ? NPAGES * 2 : NPAGES;
     for (i = 0; i < last; i += 1) {
         l = page_label(i);
         lp = page_leader (i);
         // First file page and actually a file?
         if (l->filepage == 0 && l->fid_file == 1) {
-            filename_to_string(fn, lp->filename);
-            if (strcasecmp(name, &fn[1]) == 0)
+            const char* fn = filename_to_string(lp->filename);
+            if (strcasecmp(name, fn) == 0)
                 return i;
         }
     }
@@ -401,12 +423,12 @@ int make_sysdir_array(afs_dv_t*& array, size_t& count)
         memcpy(dv, pdv, esize);
         count++;
 
-        byte length = dv->typelength % 0400;
-        byte type = dv->typelength / 0400;
+        byte length = dv->typelength[0];
+        byte type = dv->typelength[1];
         if (vflag > 1) {
             printf("%s:* directory entry    : @%u\n", __func__, (word)((char *)pdv - sysdir));
-            printf("%s:  length             : %u\n", __func__, length);
             printf("%s:  type               : %u\n", __func__, type);
+            printf("%s:  length             : %u\n", __func__, length);
             printf("%s:  fileptr.fid_dir    : %#x\n", __func__, dv->fileptr.fid_dir);
             printf("%s:  fileptr.serialno   : %#x\n", __func__, dv->fileptr.serialno);
             printf("%s:  fileptr.version    : %#x\n", __func__, dv->fileptr.version);
@@ -414,10 +436,9 @@ int make_sysdir_array(afs_dv_t*& array, size_t& count)
             printf("%s:  fileptr.leader_vda : %u\n", __func__, dv->fileptr.leader_vda);
             printf("%s:  filename length    : %u\n", __func__, dv->filename[little.l]);
         }
-        char fn[FNLEN+2];
-        filename_to_string(fn, dv->filename);
+        const char* fn = filename_to_string(dv->filename);
         if (vflag > 1)
-            printf("%s:  filename           : %s.\n", __func__, &fn[1]);
+            printf("%s:  filename           : %s.\n", __func__, fn);
 
         pdv = (afs_dv_t*)((char *)pdv + esize);
     }
@@ -523,12 +544,11 @@ int remove_sysdir_entry(const char* name)
     res = -ENOENT;
     for (size_t idx = 0; idx < count; idx++) {
         afs_dv_t* dv = &array[idx];
-        char fn[FNLEN+2];
-        filename_to_string(fn, dv->filename);
-        if (strcmp(fn+1, name))
+        const char* fn = filename_to_string(dv->filename);
+        if (strcmp(fn, name))
             continue;
         // Just mark this entry as unused
-        dv->typelength = 0;
+        dv->typelength[1] = 0;
         res = save_sysdir_array(array, count);
         break;
     }
@@ -558,15 +578,14 @@ int rename_sysdir_entry(const char* name, const char* newname)
     res = -ENOENT;
     for (size_t idx = 0; idx < count; idx++) {
         afs_dv_t* dv = &array[idx];
-        char fn[FNLEN+2];
-        filename_to_string(fn, dv->filename);
-        if (strcmp(fn+1, name))
+        const char* fn = filename_to_string(dv->filename);
+        if (strcmp(fn, name))
             continue;
         // Change the name of this array entry
         string_to_filename(dv->filename, newname);
-        filename_to_string(fn, dv->filename);
+        fn = filename_to_string(dv->filename);
         if (vflag)
-            printf("%s:  new filename       : %s.\n", __func__, &fn[1]);
+            printf("%s:  new filename       : %s.\n", __func__, fn);
         // FIXME: do we need to sort the array by name?
         res = save_sysdir_array(array, count);
         break;
@@ -586,11 +605,10 @@ int delete_file(afs_fileinfo_t* info)
     // FIXME: Do we need to modify the leader page?
     afs_leader_t* lp = page_leader(info->leader_page_vda);
 
-    char fn[FNLEN+2];
-    filename_to_string(fn, lp->filename);
+    const char* fn = filename_to_string(lp->filename);
 
     // Never allow deleting SysDir or DiskDescriptor
-    if (0 == strcmp(fn+1, "SysDir") || 0 == strcmp(fn+1, "DiskDescriptor"))
+    if (0 == strcmp(fn, "SysDir") || 0 == strcmp(fn, "DiskDescriptor"))
         return -EPERM;
 
     memset(lp->filename, 0, sizeof(lp->filename));
@@ -616,7 +634,7 @@ int delete_file(afs_fileinfo_t* info)
 
     // Remove this node from the file info hiearchy
     afs_fileinfo_t* parent = info->parent;
-    freeinfo(info);
+    free_fileinfo(info);
     for (size_t i = 0; i < parent->nchildren; i++) {
         if (parent->child[i] != info)
             continue;
@@ -626,7 +644,7 @@ int delete_file(afs_fileinfo_t* info)
         break;
     }
 
-    return remove_sysdir_entry(fn+1);
+    return remove_sysdir_entry(fn);
 }
 
 /**
@@ -638,8 +656,7 @@ int delete_file(afs_fileinfo_t* info)
 int rename_file(afs_fileinfo_t* info, const char* newname)
 {
     afs_leader_t* lp = page_leader(info->leader_page_vda);
-    char fn[FNLEN+2];
-    filename_to_string(fn, lp->filename);
+    const char* fn = filename_to_string(lp->filename);
 
     // Skip leading directory (we have only root)
     if (newname[0] == '/')
@@ -655,7 +672,7 @@ int rename_file(afs_fileinfo_t* info, const char* newname)
     // Set new name in the leader page
     string_to_filename(lp->filename, newname);
 
-    return rename_sysdir_entry(fn+1, newname);
+    return rename_sysdir_entry(fn, newname);
 }
 
 /**
@@ -666,11 +683,7 @@ int rename_file(afs_fileinfo_t* info, const char* newname)
  */
 int truncate_file(afs_fileinfo_t* info, off_t offset)
 {
-    afs_leader_t* lp = page_leader(info->leader_page_vda);
     afs_label_t* l = page_label(info->leader_page_vda);
-
-    char fn[FNLEN+2];
-    filename_to_string(fn, lp->filename);
 
     size_t size = info->st.st_size - offset;
     page_t page = rda_to_vda(l->next_rda);
@@ -730,18 +743,18 @@ int truncate_file(afs_fileinfo_t* info, off_t offset)
     return 0;
 }
 
-void freeinfo(afs_fileinfo_t* node)
+void free_fileinfo(afs_fileinfo_t* node)
 {
     if (!node)
         return;
     for (size_t i = 0; i < node->nchildren; i++)
-        freeinfo(node->child[i]);
+        free_fileinfo(node->child[i]);
     if (node->child)
         free(node->child);
     delete node;
 }
 
-int makeinfo_all()
+int make_fileinfo()
 {
     afs_label_t* l;
 
@@ -766,10 +779,10 @@ int makeinfo_all()
 
     const int last = doubledisk ? NPAGES * 2 : NPAGES;
     for (int i = 0; i < last; i++) {
-        l = (afs_label_t*) disk[i].label;
+        l = (afs_label_t*)disk[i].label;
         // First page of a file?
         if (l->filepage == 0 && l->fid_file == 1) {
-            const int res = makeinfo_file(root_dir, i);
+            const int res = make_fileinfo_file(root_dir, i);
             if (res < 0)
                 return res;
         }
@@ -777,9 +790,8 @@ int makeinfo_all()
     return 0;
 }
 
-int makeinfo_file(afs_fileinfo_t* parent, int leader_page_vda)
+int make_fileinfo_file(afs_fileinfo_t* parent, int leader_page_vda)
 {
-    char fn[FNLEN+2];
     afs_label_t* l = page_label(leader_page_vda);
     afs_leader_t* lp = page_leader(leader_page_vda);
 
@@ -787,12 +799,12 @@ int makeinfo_file(afs_fileinfo_t* parent, int leader_page_vda)
         "%s: page %d is not a leader page!\n",
         __func__, leader_page_vda);
 
-    filename_to_string(fn, lp->filename);
+    const char* fn = filename_to_string(lp->filename);
 
     afs_fileinfo_t* info = new afs_fileinfo_t;
     my_assert(info != 0,
         "%s: new afs_fileinfo_t failed for %s\n",
-        __func__, &fn[1]);
+        __func__, fn);
     if (!info)
         return -ENOMEM;
 
@@ -800,13 +812,13 @@ int makeinfo_file(afs_fileinfo_t* parent, int leader_page_vda)
 
     info->parent = parent;
     info->leader_page_vda = leader_page_vda;
-    strcpy(info->name, &fn[1]);
+    strcpy(info->name, fn);
     // Use the file identifier as inode number
     info->st.st_ino = leader_page_vda;
     if (l->fid_dir == 0x8000) {
         // A directory (SysDir) is a file which can't be modified
         info->st.st_mode = S_IFREG | 0400;
-    } else if (0 == strcmp(fn+1, "DiskDescriptor")) {
+    } else if (0 == strcmp(fn, "DiskDescriptor")) {
         // Don't allow DiskDescriptor to be written to
         info->st.st_mode = S_IFREG | 0400;
     } else {
@@ -825,9 +837,20 @@ int makeinfo_file(afs_fileinfo_t* parent, int leader_page_vda)
     info->st.st_blocks = (info->st.st_size + PAGESZ - 1) / PAGESZ;
 
     // Fill more struct stat info
-    alto_time_to_time(lp->created, &info->st.st_ctime);
-    alto_time_to_time(lp->written, &info->st.st_mtime);
-    alto_time_to_time(lp->read, &info->st.st_atime);
+    altotime_to_time(lp->created, &info->st.st_ctime);
+    altotime_to_time(lp->written, &info->st.st_mtime);
+    altotime_to_time(lp->read, &info->st.st_atime);
+#if defined(DEBUG)
+    if (vflag > 2) {
+        struct tm tm_ctime;
+        altotime_to_tm(lp->created, &tm_ctime);
+        char ctime[40];
+        strftime(ctime, sizeof(ctime), "%Y-%m-%d %H:%M:%S", &tm_ctime);
+        printf("%-40s %08o %5lu %9lu %s [%04x%04x]\n", info->name, info->st.st_mode,
+            info->st.st_ino, info->st.st_size,
+            ctime, lp->created.time[0], lp->created.time[1]);
+    }
+#endif
     info->st.st_nlink = 0;
 
     // Make a new entry in the parent's list of children
@@ -835,7 +858,7 @@ int makeinfo_file(afs_fileinfo_t* parent, int leader_page_vda)
     parent->child = (afs_fileinfo_t **) realloc(parent->child, size);
     my_assert(parent->child != 0,
         "%s: realloc(...,%u) failed for %s\n",
-        __func__, size, &fn[1]);
+        __func__, size, fn);
     if (!parent->child) {
         delete info;
         return -ENOMEM;
@@ -964,12 +987,11 @@ size_t write_file(page_t leader_page_vda, const char* data, size_t size, off_t o
     // TODO: modify lp->written date/time
     afs_leader_t* lp = page_leader(leader_page_vda);
 
-    char fn[FNLEN+2];
-    filename_to_string(fn, lp->filename);
-    afs_fileinfo_t* info = find_fileinfo(fn+1);
+    const char* fn = filename_to_string(lp->filename);
+    afs_fileinfo_t* info = find_fileinfo(fn);
     my_assert_or_die(info != NULL,
         "%s: The find_fileinfo(\"%s\") call returned NULL\n",
-        __func__, fn+1);
+        __func__, fn);
 
     page_t page = rda_to_vda(l->next_rda);
     size_t done = 0;
@@ -1021,24 +1043,34 @@ size_t write_file(page_t leader_page_vda, const char* data, size_t size, off_t o
     return done;
 }
 
-
-
-int alto_time_to_time(afs_time_t at, time_t* ptm)
+/**
+ * @brief convert an Alto 32-bit date/time value to *nix
+ *
+ * The magic offset to Unix epoch is 2117503696.
+ * Adding this value seems to reliy on 32bit wrap-around?
+ *
+ *   $ date -u --date @2117503696
+ *   Fri Feb  6 03:28:16 UTC 2037
+ *
+ *   $ date -u --date @-2117503696
+ *   Tue Nov 25 20:31:44 UTC 1902
+ */
+#define ALTOTIME_MAGIC 2117503696ul
+void altotime_to_time(afs_time_t at, time_t* ptime)
 {
-    time_t time;
-    time = at.time[0] * 65536 + at.time[1];
-    time += 2117503696;	// magic offset to Unix epoch
-    if (ptm)
-        *ptm = time;
-    return 0;
+    time_t time = 65536 * at.time[0] + at.time[1];
+    if (UINT32_MAX == (uint32_t)time)
+        time = 1;
+    else
+        time += ALTOTIME_MAGIC;
+    *ptime = time;
 }
 
-int alto_time_to_tm(afs_time_t at, struct tm* ptm)
+void altotime_to_tm(afs_time_t at, struct tm* ptm)
 {
     time_t time;
-    alto_time_to_time(at, &time);
+    altotime_to_time(at, &time);
     memcpy(ptm, localtime(&time), sizeof(*ptm));
-    return 0;
 }
 
 word getword(afs_fa_t *fa)
@@ -1070,31 +1102,6 @@ word getword(afs_fa_t *fa)
     return w;
 }
 
-/* don't think we need this routine anyway */
-void putword(afs_fa_t *fa, word w)
-{
-    afs_label_t* l = page_label(fa->vda);
-    my_assert_or_die((fa->char_pos & 1) == 0,
-        "%s: Called on odd byte boundary (%d)\n",
-        __func__, fa->char_pos);
-    /*
-     * case 1: writing in the middle of an existing file, on a page with more
-     * bytes than the one we're at.
-     * case 2: extending the last page of a file, changing nbytes as we go
-     * case 3: extending past the last page, need to allocate a new one
-     */
-
-    /* case 1, existing page, in the middle */
-    if (fa->char_pos < l->nbytes) {
-
-    }
-}
-
-
-/**********************************************/
-/* Disk page allocation, DiskDescriptor, etc. */
-/**********************************************/
-
 /**
  * @brief Get bit from free page bit table
  * The bit table is big endian, so page 0 is in bit 15,
@@ -1104,6 +1111,10 @@ void putword(afs_fa_t *fa, word w)
  */
 int getBT(page_t page)
 {
+    if (!my_assert(page >= 0 && page < bit_count,
+        "%s: page out of bounds (%d)\n",
+        __func__, page))
+        return 1;
     int bit;
     bit = 15 - (page % 16);
     return (bit_table[page / 16] >> bit) & 1;
@@ -1116,10 +1127,14 @@ int getBT(page_t page)
  */
 void setBT(page_t page, int val)
 {
-    int w, bit;
-    w = page / 16;
+    if (!my_assert(page >= 0 && page < bit_count,
+        "%s: page out of bounds (%d)\n",
+        __func__, page))
+        return;
+    int offs, bit;
+    offs = page / 16;
     bit = 15 - (page % 16);
-    bit_table[w] = (bit_table[w] & ~(1 << bit)) | ((val & 1) << bit);
+    bit_table[offs] = (bit_table[offs] & ~(1 << bit)) | ((val & 1) << bit);
 }
 
 int is_free_page(int page)
@@ -1128,8 +1143,6 @@ int is_free_page(int page)
     l = page_label(page);
     return (l->fid_file == 0xffff) && (l->fid_dir == 0xffff) && (l->fid_id == 0xffff);
 }
-
-/* Sanity Checking */
 
 /**
  * @brief Make sure that each page header refers to itself
@@ -1157,7 +1170,7 @@ int validate_disk_descriptor()
     afs_label_t* l;
     afs_fa_t fa;
 
-    /* Locate DiskDescriptor and copy it into the global data structure */
+    // Locate DiskDescriptor and copy it into the global data structure
     ddlp = find_file("DiskDescriptor");
     ok = my_assert(ddlp != -1,
         "%s: Can't find DiskDescriptor\n",
@@ -1169,21 +1182,22 @@ int validate_disk_descriptor()
     (void)lp; // yet unused
     l = page_label(ddlp);
 
-    fa.vda = rda_to_vda (l->next_rda);
+    fa.vda = rda_to_vda(l->next_rda);
     memcpy(&khd, &disk[fa.vda].data[0], sizeof(khd));
-    bit_table = (word *) malloc (khd.disk_bt_size * sizeof(word));
+    bit_count = khd.disk_bt_size * sizeof(word) * 16;
+    bit_table = (word *) malloc (bit_count / 16);
 
-    /* Now copy the bit table from the disk into bit_table */
+    // Now copy the bit table from the disk into bit_table
     fa.page_number = 1;
     fa.char_pos = sizeof(khd);
-    for (i = 0; i < khd.disk_bt_size; i += 1)
+    for (i = 0; i < khd.disk_bt_size; i++)
         bit_table[i] = getword(&fa);
 
     if (doubledisk) {
-        /* for double disk systems */
+        // For double disk systems
         ok &= my_assert (khd.nDisks == 2, "%s: Expect double disk system\n", __func__);
     } else {
-        /* for single disk systems */
+        // for single disk systems
         ok &= my_assert (khd.nDisks == 1, "%s: Expect single disk system\n", __func__);
     }
     ok &= my_assert (khd.nTracks == NCYLS, "%s: KDH tracks != %d\n", __func__, NCYLS);
@@ -1301,22 +1315,33 @@ void swabit(char *data, size_t count)
  * In src the first byte contains the length of the string (Pascal style).
  * Every filename ends with a dot (.) which we remove here.
  *
- * @param dst destination buffer of FNLEN characters
  * @param src pointer to an Alto file system filename
+ * @param returns a temporary pointer to the C style filename string
  */
-void filename_to_string(char* dst, const char* src)
+const char* filename_to_string(const char* src)
 {
+    static char buff[16][FNLEN+2];
+    static int which = 0;
+    char* dst;
+    which = (which + 1) % 16;
+    dst = buff[which];
+
     size_t length = src[little.l];
     if (length < 0 || length >= FNLEN)
         length = FNLEN - 1;
     for (size_t i = 0; i < length; i++)
         dst[i] = src[i ^ little.l];
-    /* erase closing '.' */
+    // Replace invalid (non printing) characters
+    for (size_t i = 1; i < length; i++)
+        dst[i] = isprint((unsigned char)dst[i]) ? dst[i] : '#';
+    // Erase the closing '.'
     length--;
     if ('.' == dst[length])
         dst[length] = '\0';
     else
         dst[++length] = '\0';
+    // Return the string after the length byte
+    return dst+1;
 }
 
 /**

@@ -46,13 +46,25 @@ typedef union {
     uint8_t  l, h;
 } endian_t;
 
-typedef struct {
+/**
+ * @brief Structure of the disk image pages.
+ * The pagenum field is not physically stored on the Diablo disks,
+ * but an extension of the software which created the *.dsk files.
+ *
+ * The other fields are are on each disk, separated by gaps and
+ * sync patterns.
+ */
+typedef struct afs_page_s {
     word        pagenum;        //!< page number (think LBA)
     word        header[2];      //!< Header words
     word        label[8];       //!< Label words
     word        data[256];      //!< Data words
 }   afs_page_t;
 
+/**
+ * @brief Structure of a disk label.
+ * This is the internal structure of afs_page_t::label
+ */
 typedef struct {
     word        next_rda;       //!< Next raw disk address
     word        prev_rda;       //!< Previous raw disk address
@@ -114,10 +126,23 @@ typedef struct {
 
 /**
  * @brief Structure of a directory entry (vector)
+ *
+ * The actual length of an entry is defined by the size of
+ * typelength (1 word), fileptr (5 words) and the length
+ * of the filename (filename[0] in big endian) in words,
+ * i.e. words = ((filename[0] | 1) + 1) / 2;
+ *
+ * It seems that the criteria for the end of a directory
+ * is that the filename length is 0 or greater than FNLEN.
+ *
+ * The typelength word is actually two bytes:
+ * The type value is 4 for regular files, 0 for deleted entries.
+ * The length value is most of the times somewhere close to the
+ * filename length, but not the same.
  */
 typedef struct {
-    word        typelength;         //!< type part == 4 for used files, == 0 for deleted; length (of what?)
-    afs_fp_t    fileptr;            //!< see %afs_fp_t
+    byte        typelength[2];      //!< type and length
+    afs_fp_t    fileptr;            //!< 5 words
     char        filename[FNLEN];    //!< not all used; filename[0] is the number of characters allocated
 }   afs_dv_t;
 
@@ -131,7 +156,7 @@ typedef struct {
     word        nSectors;           //!< How many sectors
     afs_sn_t    last_sn;            //!< Last SN used on disk
     word        blank;              //!< Formerly bitTableChanged
-    word        disk_bt_size;       //!< Number valid words in the bit table
+    word        disk_bt_size;       //!< Number of valid words in the bit table
     word        def_versions_kept;  //!< 0 implies no multiple versions
     word        free_pages;         //!< Free pages left on the file system
     word        blank1[6];          //!< unused (0) space
@@ -182,9 +207,6 @@ extern word vda_to_rda(page_t vda);
 
 extern page_t alloc_page(afs_fileinfo_t* info, page_t prev_vda);
 
-extern void filename_to_string(char *dst, const char *src);
-extern void string_to_filename(char *dst, const char *src);
-extern void swabit(char *data, int count);
 extern word getword(afs_fa_t *fa);
 
 extern int getBT(page_t page);
@@ -195,9 +217,9 @@ extern int rename_file(afs_fileinfo_t* info, const char* newname);
 extern int truncate_file(afs_fileinfo_t* info, off_t offset);
 extern int statvfs_kdh(struct statvfs* vfs);
 
-extern void freeinfo(afs_fileinfo_t* node);
-extern int makeinfo_all();
-extern int makeinfo_file(afs_fileinfo_t* parent, int leader_page_vda);
+extern void free_fileinfo(afs_fileinfo_t* node);
+extern int make_fileinfo();
+extern int make_fileinfo_file(afs_fileinfo_t* parent, int leader_page_vda);
 extern afs_fileinfo_t* find_fileinfo(const char* path);
 
 extern void read_page(page_t filepage, char* data, size_t size = PAGESZ);
@@ -206,8 +228,8 @@ extern size_t read_file(page_t leader_page_vda, char* data, size_t size, off_t o
 extern void write_page(page_t filepage, const char* data, size_t size);
 extern size_t write_file(page_t leader_page_vda, const char* data, size_t size, off_t offs = 0);
 
-extern int alto_time_to_time(afs_time_t at, time_t* ptime);
-extern int alto_time_to_tm(afs_time_t at, struct tm* ptm);
+extern void altotime_to_time(afs_time_t at, time_t* ptime);
+extern void altotime_to_tm(afs_time_t at, struct tm* ptm);
 
 extern int read_disk_file(const char* name);
 extern int read_single_disk(const char *name, afs_page_t* diskp);
@@ -216,8 +238,10 @@ extern void dump_memory(char* data, size_t nwords);
 extern void dump_disk_block(page_t page);
 extern int file_length(page_t leader_page_vda);
 
-/* general utilities */
+extern const char* filename_to_string(const char *src);
+extern void string_to_filename(char *dst, const char *src);
 extern void swabit(char *data, size_t size);
+
 extern int  my_assert(int flag, const char *errmsg, ...);	/* printf style */
 extern void my_assert_or_die(int flag, const char *errmsg,...);	/* printf style */
 
