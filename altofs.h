@@ -24,13 +24,16 @@
 #include <sys/stat.h>
 #include <sys/statvfs.h>
 
-#define NPAGES  4872         //!< Number of pages on one disk image
-#define PAGESZ  (256*2)      //!< Number of bytes in one page (data is actually words)
-#define FNLEN   40           //!< Maximum length of a file name
+#define NCYLS   203                  //!< Number of cylinders
+#define NHEADS  2                    //!< Number of heads
+#define NSECS   12                   //!< Number of sectors per track
+#define NPAGES  (NCYLS*NHEADS*NSECS) //!< Number of pages on one disk image
+#define PAGESZ  (256*2)              //!< Number of bytes in one page (data is actually words)
+#define FNLEN   40                   //!< Maximum length of a file name
 
-typedef uint16_t word;       //!< Storage type of Alto file system (big endian words)
-typedef uint8_t byte;        //!< Convenience type
-typedef ssize_t page_t;      //!< page number type
+typedef uint16_t word;               //!< Storage type of Alto file system (big endian words)
+typedef uint8_t byte;                //!< Well known type...
+typedef ssize_t page_t;              //!< Page number type
 
 /**
  * @brief Endian test union
@@ -84,26 +87,27 @@ typedef struct {
  * @brief Structure of the file appendix
  */
 typedef struct {
-    word        vda;            //!< Virtual disk address
-    word        page_number;    //!< page number (0 to NPAGES-1)
-    word        char_pos;       //!< Offset into the page (character position)
+    word        vda;                //!< Virtual disk address
+    word        page_number;        //!< page number (0 to NPAGES-1)
+    word        char_pos;           //!< Offset into the page (character position)
 }   afs_fa_t;
 
 /**
  * @brief Structure of the leader page of each file
- *
+ * This is exactly 256 words (or 512 bytes) and defines
+ * the structure of the first sector in each file.
  */
 typedef struct {
     afs_time_t  created;            //!< Time when created (ctime)
     afs_time_t  written;            //!< Time when last written to (mtime)
     afs_time_t  read;               //!< Time when last read from (atime)
-    char        filename[FNLEN];    //!< All filenames have a trailng dot (.)
+    char        filename[FNLEN];    //!< Pascal style string; all filenames have a trailing dot (.)
     word        leader_props[210];  //!< Property space (?)
     word        spare[10];          //!< Spare words for 256 word pages
     byte        proplength;         //!< 1 word
-    byte        propbegin;          //!< offset into leader_props
-    byte        change_SN;          //!< 1 word
-    byte        consecutive;
+    byte        propbegin;          //!< offset into leader_props (?)
+    byte        change_SN;          //!< 1 word (meaning is unknown)
+    byte        consecutive;        //!< flag for consecutive images (?)
     afs_fp_t    dir_fp_hint;        //!< 5 words
     afs_fa_t    last_page_hint;     //!< 3 words
 }   afs_leader_t;
@@ -112,9 +116,9 @@ typedef struct {
  * @brief Structure of a directory entry (vector)
  */
 typedef struct {
-    word        typelength;
-    afs_fp_t    fileptr;
-    char        filename[FNLEN];    //!< not all used
+    word        typelength;         //!< type part == 4 for used files, == 0 for deleted; length (of what?)
+    afs_fp_t    fileptr;            //!< see %afs_fp_t
+    char        filename[FNLEN];    //!< not all used; filename[0] is the number of characters allocated
 }   afs_dv_t;
 
 /**

@@ -31,29 +31,45 @@ static afs_page_t disk[NPAGES * 2];
  */
 static bool doubledisk = false;
 
+/**
+ * @brief dp0name is the name of the first disk image
+ */
 static char *dp0name = NULL;
+
+/**
+ * @brief dp1name is the name of the second disk image, if any
+ */
 static char *dp1name = NULL;
 
+/**
+ * @brief verbosity flag
+ */
 int vflag = 0;
 
+/**
+ * @brief The root directory file info
+ */
 afs_fileinfo_t* root_dir = NULL;
 
-/* actual procedures */
-
+/**
+ * @brief Return a pointer to the afs_leader_t for page vda.
+ * @param vda page number
+ * @return pointer to afs_leader_t
+ */
 afs_leader_t* page_leader(int vda)
 {
     return (afs_leader_t *)&disk[vda].data[0];
 }
 
+/**
+ * @brief Return a pointer to the afs_label_t for page vda.
+ * @param vda page number
+ * @return pointer to afs_label_t
+ */
 afs_label_t* page_label(int vda)
 {
     return (afs_label_t *)&disk[vda].label[0];
 }
-
-
-/******************************/
-/* Main work-doing procedures */
-/******************************/
 
 /**
  * @brief Read a disk file or two of them separated by comma
@@ -99,18 +115,18 @@ int read_single_disk(const char *name, afs_page_t* diskp)
     int total = NPAGES * sizeof (afs_page_t);
     char *dp = (char *)diskp;
     int ok = 1;
+    int use_pclose = 0;
 
-    /*
-     * We conclude the disk image is compressed if the name ends with .Z
-     */
+    // We conclude the disk image is compressed if the name ends with .Z
     if (strstr(name, ".Z") == name + strlen(name) - 2) {
         char* cmd = new char[strlen (name) + 10];
         sprintf(cmd, "zcat %s", name);
         infile = popen(cmd, "r");
+        delete[] cmd;
         my_assert_or_die(infile != NULL,
             "%s: popen failed on zcat %s\n",
             __func__, name);
-        delete[] cmd;
+        use_pclose = 1;
     } else {
         infile = fopen (name, "rb");
         my_assert_or_die(infile != NULL,
@@ -128,7 +144,10 @@ int read_single_disk(const char *name, afs_page_t* diskp)
         if (!ok)
             break;
     }
-    fclose(infile);
+    if (use_pclose)
+        pclose(infile);
+    else
+        fclose(infile);
     return ok;
 }
 
@@ -190,10 +209,11 @@ int file_length(page_t leader_page_vda)
     return length;
 }
 
-/**********************************/
-/* general disk untility routines */
-/**********************************/
-
+/**
+ * @brief Convert a raw disk address to a virtual disk address.
+ * @param rda raw disk address (from the image)
+ * @return virtual disk address (think LBA)
+ */
 word rda_to_vda(word rda)
 {
     word sector = (rda >> 12) & 0xf;
@@ -205,24 +225,37 @@ word rda_to_vda(word rda)
     return vda;
 }
 
+/**
+ * @brief Convert a virtual disk address to a raw disk address.
+ * @param vda virtual disk address (LBA)
+ * @return raw disk address
+ */
 word vda_to_rda(word vda)
 {
-    word sector = vda % 12;
-    word head = (vda / 12) & 1;
-    word cylinder = (vda / 24) & 0x1ff;
-    word rda = (cylinder << 3) + (head << 2) + (sector << 12);
+    word sector = vda % NSECS;
+    word head = (vda / NSECS) & 1;
+    word cylinder = (vda / (NHEADS * NSECS)) & 0x1ff;
+    word rda = (head << 2) + (cylinder << 3) + (sector << 12);
     if (vda >= NPAGES)
         rda |= 2;
     return rda;
 }
 
 /**
- * @brief Allocate a new page from the free pages
+ * @brief Allocate a new page from the free pages.
+ *
+ * First scan for an unused page following the previous page.
+ * Then scan from the start up to the previous page.
+ *
  * @param prev previous page where this page is chained to
- * @return new page RDA
+ * @return new page RDA, or 0 if no free page is found
  */
 word alloc_page(word prev)
 {
+    // Won't find a free page anyway
+    if (0 == khd.free_pages)
+        return 0;
+
     const page_t maxpage = khd.disk_bt_size * sizeof(word);
     page_t filepage = rda_to_vda(prev);
     afs_label_t* prevl = page_label(filepage);
@@ -266,7 +299,9 @@ word alloc_page(word prev)
 }
 
 /**
- * @brief Search directory for file <name> and return leader page VDA
+ * @brief Search directory for file %name and return leader page VDA.
+ * @param name filename (without the trailing dot)
+ * @return page number of the
  */
 page_t find_file(const char *name)
 {
@@ -280,18 +315,21 @@ page_t find_file(const char *name)
     for (i = 0; i < last; i += 1) {
         l = page_label(i);
         lp = page_leader (i);
+        // First file page and actually a file?
         if (l->filepage == 0 && l->fid_file == 1) {
             filename_to_string(fn, lp->filename);
             if (strcasecmp(name, &fn[1]) == 0)
                 return i;
         }
     }
-    my_assert(0, "%s: File %s not found\n", __func__, name);
+    my_assert(0,
+        "%s: File %s not found\n",
+        __func__, name);
     return -1;
 }
 
 /**
- * @brief Scan a SysDir file and build an array of afs_dv_t entries
+ * @brief Scan the SysDir file and build an array of afs_dv_t entries.
  * @param ppdv pointer to a pointer to afs_dv_t
  * @param pcount pointer to a size_t to receive the number of entries
  */
@@ -312,7 +350,8 @@ int make_sysdir_array(afs_dv_t*& array, size_t& count)
         return -ENOMEM;
 
     read_file(info->leader_page_vda, sysdir, sdsize);
-    swabit((char *)sysdir, sdsize);
+    if (little.l)
+        swabit((char *)sysdir, sdsize);
 
     const afs_dv_t* end = (afs_dv_t *)(sysdir + sdsize);
     afs_dv_t* pdv = (afs_dv_t *)sysdir;
@@ -358,7 +397,7 @@ int make_sysdir_array(afs_dv_t*& array, size_t& count)
         pdv = (afs_dv_t*)((char *)pdv + esize);
     }
     if (vflag) {
-        size_t eod = (size_t)((char *)pdv - sysdir); 
+        size_t eod = (size_t)((char *)pdv - sysdir);
         printf("%s: SysDir usage is %lu/%lu bytes\n", __func__, eod, sdsize);
     }
 
@@ -366,6 +405,12 @@ int make_sysdir_array(afs_dv_t*& array, size_t& count)
     return 0;
 }
 
+/**
+ * @brief Save an array of afs_dv_t entries to the SysDir pages.
+ * @param array pointer to array of afs_dv_t entries
+ * @param count number of entries
+ * @return 0 on success, or -ENOENT if SysDir is not found
+ */
 int save_sysdir_array(afs_dv_t* array, size_t count)
 {
     if (!array)
@@ -386,7 +431,8 @@ int save_sysdir_array(afs_dv_t* array, size_t count)
         return -ENOMEM;
 
     read_file(info->leader_page_vda, sysdir, sdsize);
-    swabit((char *)sysdir, sdsize);
+    if (little.l)
+        swabit((char *)sysdir, sdsize);
 
     const afs_dv_t* end = (afs_dv_t *)(sysdir + sdsize);
     afs_dv_t* pdv = (afs_dv_t *)sysdir;
@@ -418,14 +464,15 @@ int save_sysdir_array(afs_dv_t* array, size_t count)
     }
 
     if (vflag) {
-        size_t eod = (size_t)((char *)pdv - sysdir); 
+        size_t eod = (size_t)((char *)pdv - sysdir);
         printf("%s: SysDir usage is %lu/%lu bytes\n", __func__, eod, sdsize);
     }
 
 #if defined(DEBUG)
     dump_memory(sysdir, sdsize);
 #endif
-    swabit(sysdir, sdsize);
+    if (little.l)
+        swabit(sysdir, sdsize);
     write_file(info->leader_page_vda, sysdir, sdsize);
     free(sysdir);
     return 0;
@@ -986,18 +1033,14 @@ int validate_disk_descriptor()
     if (doubledisk) {
         /* for double disk systems */
         ok &= my_assert (khd.nDisks == 2, "%s: Expect double disk system\n", __func__);
-        ok &= my_assert (khd.nTracks == 203, "%s: KDH tracks != 203\n", __func__);
-        ok &= my_assert (khd.nHeads == 2, "%s: KDH heads != 2\n", __func__);
-        ok &= my_assert (khd.nSectors == 12, "%s: KDH sectors != 12\n", __func__);
-        ok &= my_assert (khd.def_versions_kept == 0, "%s: defaultVersions != 0\n", __func__);
     } else {
         /* for single disk systems */
         ok &= my_assert (khd.nDisks == 1, "%s: Expect single disk system\n", __func__);
-        ok &= my_assert (khd.nTracks == 203, "%s: KDH tracks != 203\n", __func__);
-        ok &= my_assert (khd.nHeads == 2, "%s: KDH heads != 2\n", __func__);
-        ok &= my_assert (khd.nSectors == 12, "%s: KDH sectors != 12\n", __func__);
-        ok &= my_assert (khd.def_versions_kept == 0, "%s: defaultVersions != 0\n", __func__);
     }
+    ok &= my_assert (khd.nTracks == NCYLS, "%s: KDH tracks != %d\n", __func__, NCYLS);
+    ok &= my_assert (khd.nHeads == NHEADS, "%s: KDH heads != %d\n", __func__, NHEADS);
+    ok &= my_assert (khd.nSectors == NSECS, "%s: KDH sectors != %d\n", __func__, NSECS);
+    ok &= my_assert (khd.def_versions_kept == 0, "%s: defaultVersions != 0\n", __func__);
 
     // Count free pages in bit table
     nfree = 0;
@@ -1037,9 +1080,16 @@ void fix_disk_descriptor()
     khd.free_pages = nfree;
 }
 
-/****************************/
-/* general support routines */
-/****************************/
+/**
+ * @brief An assert() like function
+ *
+ * As opposed to assert(), this function is in debug and release
+ * builds and does not break in a debug build.
+ *
+ * @param flag if zero, print the assert message
+ * @param errmsg message format (printf style)
+ * @return the flag
+ */
 int my_assert(int flag, const char *errmsg, ...)
 {
     va_list ap;
@@ -1051,6 +1101,16 @@ int my_assert(int flag, const char *errmsg, ...)
     return flag;
 }
 
+/**
+ * @brief An assert() like function which exits
+ *
+ * As opposed to assert(), this function is in debug and release
+ * builds. This version exits if the assertion fails.
+ *
+ * @param flag if zero, print the assert message
+ * @param errmsg message format (printf style)
+ * @return the flag
+ */
 void my_assert_or_die(int flag, const char *errmsg, ...)
 {
     va_list ap;
@@ -1062,6 +1122,11 @@ void my_assert_or_die(int flag, const char *errmsg, ...)
     }
 }
 
+/**
+ * @brief Swap an array of words
+ * @param data pointer to array
+ * @param count number of bytes in array
+ */
 void swabit(char *data, size_t count)
 {
     my_assert_or_die((count & 1) == 0 && ((size_t)data & 1) == 0,
@@ -1082,7 +1147,8 @@ void swabit(char *data, size_t count)
 }
 
 /**
- * @brief Copy an Alto file system filename from src to a C string at dst
+ * @brief Copy an Alto file system filename from src to a C string at dst.
+ *
  * In src the first byte contains the length of the string (Pascal style).
  * Every filename ends with a dot (.) which we remove here.
  *
@@ -1105,7 +1171,8 @@ void filename_to_string(char* dst, const char* src)
 }
 
 /**
- * @brief Copy a C string from src to an Alto file system filename at dst
+ * @brief Copy a C string from src to an Alto file system filename at dst.
+ *
  * @param dst pointer to an Alto file system filename
  * @param src source buffer of at mose FNLEN-1 characters
  */
@@ -1122,7 +1189,7 @@ void string_to_filename(char* dst, const char*src)
 }
 
 /**
- * @brief Fill a struct statvfs pointer with info about the file system
+ * @brief Fill a struct statvfs pointer with info about the file system.
  * @param vfs pointer to a struct statvfs
  * @return 0 on success, -EBADF on error (root_dir is NULL)
  */
@@ -1141,7 +1208,9 @@ int statvfs_kdh(struct statvfs* vfs)
     vfs->f_bfree = khd.free_pages;
     vfs->f_bavail = khd.free_pages;
     vfs->f_files = root_dir->nchildren;
+    // FIXME: Is there a way to determine the number of possible files?
     vfs->f_ffree = 0;
+    // FIXME: this is without length byte and trailing dot, thus -2. Is this correct?
     vfs->f_namemax = FNLEN-2;
     return 0;
 }
