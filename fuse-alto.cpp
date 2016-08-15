@@ -13,6 +13,7 @@
 #include <stdint.h>
 #include "altofs.h"
 
+static int verbose = 0;
 static const char* mountpoint = NULL;
 static const char* filenames = NULL;
 static struct fuse_chan* chan = NULL;
@@ -20,6 +21,7 @@ static struct fuse* fuse = NULL;
 static struct fuse_operations fuse_ops;
 static int foreground = 0;
 static int multithreaded = 1;
+static AltoFS* afs;
 
 /**
  * @brief Yet unused list of options
@@ -30,14 +32,40 @@ static struct fuse_opt opts_alto[] = {
     FUSE_OPT_END
 };
 
+static int create_alto(const char* path, mode_t mode, dev_t dev)
+{
+    struct fuse_context* ctx = fuse_get_context();
+    AltoFS* afs = reinterpret_cast<AltoFS*>(ctx->private_data);
+
+    afs_fileinfo_t* info = afs->find_fileinfo(path);
+    if (info)
+        return -EEXIST;
+    int res = afs->create_file(path);
+    if (res < 0) {
+        printf("%s: create_file(\"%s\") returned %d\n",
+            __func__, path, res);
+        return res;
+    }
+    info = afs->find_fileinfo(path);
+    // Something went really, really wrong
+    if (!info) {
+        printf("%s: file not found after create_file()\n",
+            __func__);
+        return -ENOSPC;
+    }
+    return 0;
+}
+
 static int getattr_alto(const char *path, struct stat *stbuf)
 {
-    memset(stbuf, 0, sizeof(struct stat));
-    afs_fileinfo_t* info = find_fileinfo(path);
+    struct fuse_context* ctx = fuse_get_context();
+    AltoFS* afs = reinterpret_cast<AltoFS*>(ctx->private_data);
 
+    memset(stbuf, 0, sizeof(struct stat));
+    afs_fileinfo_t* info = afs->find_fileinfo(path);
     if (!info)
         return -ENOENT;
-    struct fuse_context* ctx = fuse_get_context();
+
     info->st.st_uid = ctx->uid;
     info->st.st_gid = ctx->gid;
     info->st.st_mode &= ~ctx->umask;
@@ -48,12 +76,13 @@ static int getattr_alto(const char *path, struct stat *stbuf)
 
 static int readdir_alto(const char *path, void *buf, fuse_fill_dir_t filler, off_t offset, struct fuse_file_info *fi)
 {
+    struct fuse_context* ctx = fuse_get_context();
+    AltoFS* afs = reinterpret_cast<AltoFS*>(ctx->private_data);
 
-    afs_fileinfo_t* info = find_fileinfo(path);
+    afs_fileinfo_t* info = afs->find_fileinfo(path);
     if (!info)
         return -ENOENT;
 
-    struct fuse_context* ctx = fuse_get_context();
     info->st.st_uid = ctx->uid;
     info->st.st_gid = ctx->gid;
     // info->st.st_mode &= ctx->umask;
@@ -65,9 +94,11 @@ static int readdir_alto(const char *path, void *buf, fuse_fill_dir_t filler, off
         afs_fileinfo_t* child = info->child[i];
         if (!child)
             continue;
+
         child->st.st_uid = ctx->uid;
         child->st.st_gid = ctx->gid;
         child->st.st_mode &= ~ctx->umask;
+
         if (filler(buf, child->name, &child->st, 0))
             break;
     }
@@ -77,7 +108,10 @@ static int readdir_alto(const char *path, void *buf, fuse_fill_dir_t filler, off
 
 static int open_alto(const char *path, struct fuse_file_info *fi)
 {
-    afs_fileinfo_t* info = find_fileinfo(path);
+    struct fuse_context* ctx = fuse_get_context();
+    AltoFS* afs = reinterpret_cast<AltoFS*>(ctx->private_data);
+
+    afs_fileinfo_t* info = afs->find_fileinfo(path);
     if (!info)
         return -ENOENT;
     return 0;
@@ -85,60 +119,70 @@ static int open_alto(const char *path, struct fuse_file_info *fi)
 
 static int read_alto(const char *path, char *buf, size_t size, off_t offset, struct fuse_file_info*)
 {
-    afs_fileinfo_t* info = find_fileinfo(path);
+    struct fuse_context* ctx = fuse_get_context();
+    AltoFS* afs = reinterpret_cast<AltoFS*>(ctx->private_data);
+
+    afs_fileinfo_t* info = afs->find_fileinfo(path);
     if (!info)
         return -ENOENT;
-
     if (offset >= info->st.st_size)
         return 0;
-
-    size_t done = read_file(info->leader_page_vda, buf, size, offset);
-    return done;
+    return afs->read_file(info->leader_page_vda, buf, size, offset);
 }
 
 static int write_alto(const char *path, const char *buf, size_t size, off_t offset, struct fuse_file_info*)
 {
-    afs_fileinfo_t* info = find_fileinfo(path);
+    struct fuse_context* ctx = fuse_get_context();
+    AltoFS* afs = reinterpret_cast<AltoFS*>(ctx->private_data);
+
+    afs_fileinfo_t* info = afs->find_fileinfo(path);
     if (!info)
         return -ENOENT;
-
-    size_t done = write_file(info->leader_page_vda, buf, size, offset);
-    return done;
+    return afs->write_file(info->leader_page_vda, buf, size, offset);
 }
 
 static int truncate_alto(const char* path, off_t offset)
 {
-    afs_fileinfo_t* info = find_fileinfo(path);
-    if (!info) {
-        // TODO: create new file entry
+    struct fuse_context* ctx = fuse_get_context();
+    AltoFS* afs = reinterpret_cast<AltoFS*>(ctx->private_data);
+
+    afs_fileinfo_t* info = afs->find_fileinfo(path);
+    if (!info)
         return -ENOENT;
-    }
-    int res = truncate_file(info, offset);
-    return res;
+    return afs->truncate_file(info, offset);
 }
 
 static int unlink_alto(const char *path)
 {
-    afs_fileinfo_t* info = find_fileinfo(path);
+    struct fuse_context* ctx = fuse_get_context();
+    AltoFS* afs = reinterpret_cast<AltoFS*>(ctx->private_data);
+
+    afs_fileinfo_t* info = afs->find_fileinfo(path);
     if (!info)
         return -ENOENT;
-    return delete_file(info);
+    return afs->delete_file(info);
 }
 
 static int rename_alto(const char *path, const char* newname)
 {
-    afs_fileinfo_t* info = find_fileinfo(path);
+    struct fuse_context* ctx = fuse_get_context();
+    AltoFS* afs = reinterpret_cast<AltoFS*>(ctx->private_data);
+
+    afs_fileinfo_t* info = afs->find_fileinfo(path);
     if (!info)
         return -ENOENT;
-    return rename_file(info, newname);
+    return afs->rename_file(info, newname);
 }
 
 static int statfs_alto(const char *path, struct statvfs* vfs)
 {
+    struct fuse_context* ctx = fuse_get_context();
+    AltoFS* afs = reinterpret_cast<AltoFS*>(ctx->private_data);
+
     // We have but a single root directory
     if (strcmp(path, "/"))
         return -EINVAL;
-    return statvfs_kdh(vfs);
+    return afs->statvfs(vfs);
 }
 
 #if defined(DEBUG)
@@ -177,10 +221,13 @@ static const char* fuse_cap(unsigned flags)
 void* init_alto(fuse_conn_info* info)
 {
     (void)info;
-    little.e = 1;
+
+    // FIXME: Where do I really get the "device" to mount?
+    // Handling it on my own by using the last argv[] can't be right.
+    afs = new AltoFS(filenames);
 
 #if defined(DEBUG)
-    if (vflag > 2) {
+    if (verbose > 2) {
       printf("%s: fuse_conn_info* = %p\n", __func__, (void*)info);
       printf("%s:   proto_major             : %u\n", __func__, info->proto_major);
       printf("%s:   proto_minor             : %u\n", __func__, info->proto_minor);
@@ -195,16 +242,7 @@ void* init_alto(fuse_conn_info* info)
       printf("%s:   congestion_threshold    : %u\n", __func__, info->congestion_threshold);
     }
 #endif
-
-    // FIXME: Where do I really get the "device" to mount?
-    // Handling it on my own by using the last argv[] can't be right.
-    read_disk_file(filenames);
-    // verify_headers();
-    if (!validate_disk_descriptor())
-        fix_disk_descriptor();
-    make_fileinfo();
-
-    return root_dir;
+    return afs;
 }
 
 int usage(const char* program)
@@ -236,7 +274,7 @@ int fuse_opt_alto(void* data, const char* arg, int key, struct fuse_args* outarg
     switch (key) {
     case FUSE_OPT_KEY_OPT:
         if (!strcmp(arg, "-v"))
-            vflag += 1;
+            verbose++;
         if (!strcmp(arg, "-f"))
             foreground = 1;
         if (!strcmp(arg, "-s"))
@@ -259,24 +297,25 @@ int fuse_opt_alto(void* data, const char* arg, int key, struct fuse_args* outarg
 void shutdown_fuse()
 {
     if (fuse) {
-        if (vflag)
+        if (verbose)
             printf("%s: removing signal handlers\n", __func__);
         fuse_remove_signal_handlers(fuse_get_session(fuse));
     }
     if (mountpoint && chan) {
-        if (vflag)
+        if (verbose)
             printf("%s: unmounting %s\n", __func__, mountpoint);
         fuse_unmount(mountpoint, chan);
         mountpoint = 0;
         chan = 0;
     }
     if (fuse) {
-        if (vflag)
+        if (verbose)
             printf("%s: destroying fuse (%p)\n", __func__, (void*)fuse);
         fuse_destroy(fuse);
         fuse = 0;
     }
-    cleanup_afs();
+    delete afs;
+    afs = 0;
 }
 
 int main(int argc, char *argv[])
@@ -291,6 +330,7 @@ int main(int argc, char *argv[])
     fuse_ops.open = open_alto;
     fuse_ops.read = read_alto;
     fuse_ops.write = write_alto;
+    fuse_ops.mknod = create_alto;
     fuse_ops.truncate = truncate_alto;
     fuse_ops.readdir = readdir_alto;
     fuse_ops.statfs = statfs_alto;
