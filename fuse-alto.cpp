@@ -37,7 +37,7 @@ static int create_alto(const char* path, mode_t mode, dev_t dev)
     struct fuse_context* ctx = fuse_get_context();
     AltoFS* afs = reinterpret_cast<AltoFS*>(ctx->private_data);
 
-    afs_fileinfo_t* info = afs->find_fileinfo(path);
+    afs_fileinfo* info = afs->find_fileinfo(path);
     if (info)
         return -EEXIST;
     int res = afs->create_file(path);
@@ -62,15 +62,15 @@ static int getattr_alto(const char *path, struct stat *stbuf)
     AltoFS* afs = reinterpret_cast<AltoFS*>(ctx->private_data);
 
     memset(stbuf, 0, sizeof(struct stat));
-    afs_fileinfo_t* info = afs->find_fileinfo(path);
+    afs_fileinfo* info = afs->find_fileinfo(path);
     if (!info)
         return -ENOENT;
 
-    info->st.st_uid = ctx->uid;
-    info->st.st_gid = ctx->gid;
-    info->st.st_mode &= ~ctx->umask;
+    info->setStatUid(ctx->uid);
+    info->setStatGid(ctx->gid);
+    info->setStatMode(info->statMode() & ~ctx->umask);
 
-    memcpy(stbuf, &info->st, sizeof(*stbuf));
+    memcpy(stbuf, info->st(), sizeof(*stbuf));
     return 0;
 }
 
@@ -79,27 +79,27 @@ static int readdir_alto(const char *path, void *buf, fuse_fill_dir_t filler, off
     struct fuse_context* ctx = fuse_get_context();
     AltoFS* afs = reinterpret_cast<AltoFS*>(ctx->private_data);
 
-    afs_fileinfo_t* info = afs->find_fileinfo(path);
+    afs_fileinfo* info = afs->find_fileinfo(path);
     if (!info)
         return -ENOENT;
 
-    info->st.st_uid = ctx->uid;
-    info->st.st_gid = ctx->gid;
-    // info->st.st_mode &= ctx->umask;
+    info->setStatUid(ctx->uid);
+    info->setStatGid(ctx->gid);
+    info->setStatMode(info->statMode() & ~ctx->umask);
 
-    filler(buf, ".", &info->st, 0);
+    filler(buf, ".", info->st(), 0);
     filler(buf, "..", NULL, 0);
 
-    for (size_t i = 0; i < info->nchildren; i++) {
-        afs_fileinfo_t* child = info->child[i];
+    for (int i = 0; i < info->size(); i++) {
+        afs_fileinfo* child = info->child(i);
         if (!child)
             continue;
 
-        child->st.st_uid = ctx->uid;
-        child->st.st_gid = ctx->gid;
-        child->st.st_mode &= ~ctx->umask;
+        child->setStatUid(ctx->uid);
+        child->setStatGid(ctx->gid);
+        child->setStatMode(child->statMode() & ~ctx->umask);
 
-        if (filler(buf, child->name, &child->st, 0))
+        if (filler(buf, child->name().c_str(), child->st(), 0))
             break;
     }
 
@@ -111,7 +111,7 @@ static int open_alto(const char *path, struct fuse_file_info *fi)
     struct fuse_context* ctx = fuse_get_context();
     AltoFS* afs = reinterpret_cast<AltoFS*>(ctx->private_data);
 
-    afs_fileinfo_t* info = afs->find_fileinfo(path);
+    afs_fileinfo* info = afs->find_fileinfo(path);
     if (!info)
         return -ENOENT;
     return 0;
@@ -122,12 +122,12 @@ static int read_alto(const char *path, char *buf, size_t size, off_t offset, str
     struct fuse_context* ctx = fuse_get_context();
     AltoFS* afs = reinterpret_cast<AltoFS*>(ctx->private_data);
 
-    afs_fileinfo_t* info = afs->find_fileinfo(path);
+    afs_fileinfo* info = afs->find_fileinfo(path);
     if (!info)
         return -ENOENT;
-    if (offset >= info->st.st_size)
+    if (offset >= info->st()->st_size)
         return 0;
-    return afs->read_file(info->leader_page_vda, buf, size, offset);
+    return afs->read_file(info->leader_page_vda(), buf, size, offset);
 }
 
 static int write_alto(const char *path, const char *buf, size_t size, off_t offset, struct fuse_file_info*)
@@ -135,10 +135,10 @@ static int write_alto(const char *path, const char *buf, size_t size, off_t offs
     struct fuse_context* ctx = fuse_get_context();
     AltoFS* afs = reinterpret_cast<AltoFS*>(ctx->private_data);
 
-    afs_fileinfo_t* info = afs->find_fileinfo(path);
+    afs_fileinfo* info = afs->find_fileinfo(path);
     if (!info)
         return -ENOENT;
-    return afs->write_file(info->leader_page_vda, buf, size, offset);
+    return afs->write_file(info->leader_page_vda(), buf, size, offset);
 }
 
 static int truncate_alto(const char* path, off_t offset)
@@ -146,7 +146,7 @@ static int truncate_alto(const char* path, off_t offset)
     struct fuse_context* ctx = fuse_get_context();
     AltoFS* afs = reinterpret_cast<AltoFS*>(ctx->private_data);
 
-    afs_fileinfo_t* info = afs->find_fileinfo(path);
+    afs_fileinfo* info = afs->find_fileinfo(path);
     if (!info)
         return -ENOENT;
     return afs->truncate_file(info, offset);
@@ -157,10 +157,10 @@ static int unlink_alto(const char *path)
     struct fuse_context* ctx = fuse_get_context();
     AltoFS* afs = reinterpret_cast<AltoFS*>(ctx->private_data);
 
-    afs_fileinfo_t* info = afs->find_fileinfo(path);
+    afs_fileinfo* info = afs->find_fileinfo(path);
     if (!info)
         return -ENOENT;
-    return afs->delete_file(info);
+    return afs->unlink_file(info);
 }
 
 static int rename_alto(const char *path, const char* newname)
@@ -168,7 +168,7 @@ static int rename_alto(const char *path, const char* newname)
     struct fuse_context* ctx = fuse_get_context();
     AltoFS* afs = reinterpret_cast<AltoFS*>(ctx->private_data);
 
-    afs_fileinfo_t* info = afs->find_fileinfo(path);
+    afs_fileinfo* info = afs->find_fileinfo(path);
     if (!info)
         return -ENOENT;
     return afs->rename_file(info, newname);
@@ -225,6 +225,7 @@ void* init_alto(fuse_conn_info* info)
     // FIXME: Where do I really get the "device" to mount?
     // Handling it on my own by using the last argv[] can't be right.
     afs = new AltoFS(filenames);
+    afs->setVerbosity(verbose);
 
 #if defined(DEBUG)
     if (verbose > 2) {
