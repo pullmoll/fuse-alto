@@ -1,18 +1,14 @@
 ## fuse-alto
 
-A try to implement a FUSE driver for the Alto and Alto II
-file system.
+A partially working FUSE driver for the Xerox Alto and Alto II file system.
 
 The code is based on L. Stewart's `aar.c` dated 1/18/93.
 
 Currently nothing is written back to a mounted disk image,
 but you can stat and read files.
 
-Removing (rm) and renaming (mv) files is now supported,
-and the internal disk image's SysDir is updated accordingly.
-
-If time permits, I will try to implement the code required to
-modify existing files and create new files.
+Many (most) file operations now work, including renaming, removing,
+creating, truncating and reading or writing files.
 
 Remember: nothing is written back to the disk image file(s) you specified.
 Each time you mount a disk image it is in its original state.
