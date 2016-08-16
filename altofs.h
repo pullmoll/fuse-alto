@@ -31,9 +31,9 @@ public:
     int create_file(std::string path);
 
     size_t read_file(page_t leader_page_vda, char* data, size_t size,
-        off_t offset = 0, bool dbg = true);
+        off_t offset = 0, bool update = true);
     size_t write_file(page_t leader_page_vda, const char* data, size_t size,
-        off_t offset = 0, bool dbg = true);
+        off_t offset = 0, bool update = true);
 
     int statvfs(struct statvfs* vfs);
 
@@ -67,6 +67,7 @@ private:
 
     void read_page(page_t filepage, char* data, size_t size = PAGESZ);
     void write_page(page_t filepage, const char* data, size_t size = PAGESZ);
+    void zero_page(page_t filepage);
 
     void altotime_to_time(afs_time_t at, time_t* ptime);
     void time_to_altotime(time_t time, afs_time_t* at);
@@ -96,8 +97,9 @@ private:
 
     endian_t m_little;                  //!< The little vs. big endian test flag
     afs_khd_t m_khd;                    //!< Storage for disk allocation datastructures: disk descriptor
-    std::vector<word> m_bit_table;      //!< bitmap for pages allocated
     page_t m_bit_count;                 //!< Number of bits in bit_table
+    std::vector<word> m_bit_table;      //!< bitmap for pages allocated
+    bool m_bit_table_dirty;             //!< Flag to tell when the bit_table was written to
     std::vector<char> m_sysdir;         //!< A copy of the on-disk SysDir file
     bool m_sysdir_dirty;                //!< Flag to tell when the sysdir was written to
     std::vector<afs_dv> m_files;        //!< The contents of SysDir as vector of files

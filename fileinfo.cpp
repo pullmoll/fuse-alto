@@ -1,5 +1,28 @@
 #include "fileinfo.h"
 
+afs_fileinfo::afs_fileinfo() :
+    m_parent(0),
+    m_name(),
+    m_st(),
+    m_leader_page_vda(0),
+    m_children()
+{
+}
+
+afs_fileinfo::afs_fileinfo(afs_fileinfo* parent, std::string name, struct stat st, int vda) :
+    m_parent(parent),
+    m_name(name),
+    m_st(st),
+    m_leader_page_vda(vda),
+    m_children()
+{
+}
+
+afs_fileinfo::~afs_fileinfo()
+{
+    m_children.clear();
+}
+
 afs_fileinfo* afs_fileinfo::parent() const
 {
     return m_parent;
@@ -25,26 +48,26 @@ page_t afs_fileinfo::leader_page_vda() const
     return m_leader_page_vda;
 }
 
-std::vector<afs_fileinfo> afs_fileinfo::children() const
+std::vector<afs_fileinfo*> afs_fileinfo::children() const
 {
     return m_children;
 }
 
 afs_fileinfo* afs_fileinfo::child(int idx)
 {
-    return &m_children.at(idx);
+    return m_children.at(idx);
 }
 
 const afs_fileinfo* afs_fileinfo::child(int idx) const
 {
-    return &m_children.at(idx);
+    return m_children.at(idx);
 }
 
 afs_fileinfo* afs_fileinfo::find(std::string name)
 {
-    std::vector<afs_fileinfo>::iterator it;
+    std::vector<afs_fileinfo*>::iterator it;
     for (it = m_children.begin(); it != m_children.end(); it++) {
-        afs_fileinfo* node = it.base();
+        afs_fileinfo* node = *it.base();
         if (!node)
             continue;
         if (name == node->name())
@@ -166,7 +189,7 @@ void afs_fileinfo::setStatNLink(size_t count)
 
 void afs_fileinfo::erase(int pos, int count)
 {
-    std::vector<afs_fileinfo>::iterator it;
+    std::vector<afs_fileinfo*>::iterator it;
     int idx = 0;
     for (it = m_children.begin(); it != m_children.end(); it++) {
         if (idx < pos)
@@ -179,7 +202,7 @@ void afs_fileinfo::erase(int pos, int count)
     }
 }
 
-void afs_fileinfo::erase(std::vector<afs_fileinfo>::iterator pos)
+void afs_fileinfo::erase(std::vector<afs_fileinfo*>::iterator pos)
 {
     m_children.erase(pos);
 }
@@ -189,19 +212,18 @@ void afs_fileinfo::rename(std::string newname)
     m_name = newname;
 }
 
-void afs_fileinfo::insert(afs_fileinfo* child)
+void afs_fileinfo::append(afs_fileinfo* info)
 {
-    std::vector<afs_fileinfo>::iterator it = m_children.begin();
-    m_children.insert(it, *child);
+    m_children.push_back(info);
     m_st.st_nlink += 1;
 }
 
 bool afs_fileinfo::remove(afs_fileinfo* child)
 {
-    std::vector<afs_fileinfo>::iterator it;
+    std::vector<afs_fileinfo*>::iterator it;
     int idx = 0;
     for (it = m_children.begin(); it != m_children.end(); it++) {
-        const afs_fileinfo* node = &m_children.at(idx);
+        afs_fileinfo* node = m_children.at(idx);
         if (child->name() == node->name()) {
             m_children.erase(it);
             return true;
