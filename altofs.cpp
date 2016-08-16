@@ -45,6 +45,11 @@ AltoFS::AltoFS(const char* filename) :
     read_sysdir();
 }
 
+AltoFS::~AltoFS()
+{
+    cleanup_afs();
+}
+
 void AltoFS::log(int verbosity, const char* format, ...)
 {
     if (verbosity > verbose)
@@ -54,11 +59,6 @@ void AltoFS::log(int verbosity, const char* format, ...)
     vprintf(format, args);
     va_end(args);
     fflush(stdout);
-}
-
-AltoFS::~AltoFS()
-{
-    cleanup_afs();
 }
 
 int AltoFS::verbosity() const
@@ -438,7 +438,7 @@ int AltoFS::read_sysdir()
     // Allocate sysdir with slack for one extra afs_dv_t
     m_sysdir.resize(sdsize + sizeof(afs_dv_t));
 
-    read_file(info->leader_page_vda(), m_sysdir.data(), sdsize);
+    read_file(info->leader_page_vda(), m_sysdir.data(), sdsize, false);
     if (little.l)
         swabit((char *)m_sysdir.data(), sdsize);
 
@@ -560,11 +560,11 @@ int AltoFS::save_sysdir()
     if (little.l) {
         std::vector<char> sysdir(m_sysdir);
         swabit(sysdir.data(), sdsize);
-        size_t written = write_file(info->leader_page_vda(), sysdir.data(), eod);
+        size_t written = write_file(info->leader_page_vda(), sysdir.data(), eod, false);
         if (written != eod)
             res = -ENOSPC;
     } else {
-        size_t written = write_file(info->leader_page_vda(), m_sysdir.data(), eod);
+        size_t written = write_file(info->leader_page_vda(), m_sysdir.data(), eod, false);
         if (written != eod)
             res = -ENOSPC;
     }
@@ -732,7 +732,7 @@ int AltoFS::truncate_file(afs_fileinfo* info, off_t offset)
 
             // free this page
 #if defined(DEBUG)
-            log(3,"%s: pos=0x%06lx page=%-5ld (free page)\n",
+            log(3,"%s: offs=0x%06lx page=%-5ld (free page)\n",
                 __func__, pos, page);
 #endif
             free_page(page, id);
@@ -748,7 +748,7 @@ int AltoFS::truncate_file(afs_fileinfo* info, off_t offset)
             // shrink this page to the remaining bytes
             l->nbytes = offset - pos;
 #if defined(DEBUG)
-            log(3,"%s: pos=0x%06lx page=%-5ld (shrink to 0x%03x bytes)\n",
+            log(3,"%s: offs=0x%06lx page=%-5ld (shrink to 0x%03x bytes)\n",
                 __func__, pos, page, l->nbytes);
 #endif
             size -= l->nbytes;
@@ -767,7 +767,7 @@ int AltoFS::truncate_file(afs_fileinfo* info, off_t offset)
                 return -ENOSPC;
             }
 #if defined(DEBUG)
-            log(3,"%s: pos=0x%06lx page=%-5ld (allocated new page)\n",
+            log(3,"%s: offs=0x%06lx page=%-5ld (allocated new page)\n",
                 __func__, pos, page);
 #endif
             if (pos + PAGESZ < offset) {
@@ -784,7 +784,7 @@ int AltoFS::truncate_file(afs_fileinfo* info, off_t offset)
 
         } else {
 #if defined(DEBUG)
-            log(4,"%s: pos=0x%06lx page=%-5ld (seeking to 0x%06lx)\n",
+            log(4,"%s: offs=0x%06lx page=%-5ld (seeking to 0x%06lx)\n",
                 __func__, pos, page, offset);
 #endif
             size -= PAGESZ;
@@ -840,10 +840,6 @@ int AltoFS::create_file(std::string path)
     lp->dir_fp_hint.blank = 0;
     lp->dir_fp_hint.leader_vda = page;      // let's assume this means our own leader page
 
-    lp->last_page_hint.vda = page;
-    lp->last_page_hint.page_number = page % NPAGES;
-    lp->last_page_hint.char_pos = 0;
-
 #if 1
     log(0, "%s: created                    : %s\n", __func__, altotime_to_str(lp->created).c_str());
     log(0, "%s: written                    : %s\n", __func__, altotime_to_str(lp->written).c_str());
@@ -875,6 +871,11 @@ int AltoFS::create_file(std::string path)
     // Set the page0 nbytes to zero
     l = page_label(page0);
     l->nbytes = 0;
+
+    // Update the last page hint
+    lp->last_page_hint.vda = page0;
+    lp->last_page_hint.page_number = page0 % NPAGES;
+    lp->last_page_hint.char_pos = 0;
 
     // Find position in the SysDir array where to insert
     std::vector<afs_dv>::iterator it;
@@ -1068,33 +1069,37 @@ void AltoFS::write_page(page_t filepage, const char* data, size_t size)
  * @param offs start offset to read from
  * @return number of bytes actually read
  */
-size_t AltoFS::read_file(page_t leader_page_vda, char* data, size_t size, off_t offs)
+size_t AltoFS::read_file(page_t leader_page_vda, char* data, size_t size, off_t offset, bool dbg)
 {
     afs_label_t* l = page_label(leader_page_vda);
     page_t page = rda_to_vda(l->next_rda);
     size_t done = 0;
-    off_t pos = 0;
+    off_t offs = 0;
     while (page && size > 0) {
         l = page_label(page);
         size_t nbytes = size < l->nbytes ? size : l->nbytes;
-        if (pos >= offs) {
+        if (offs >= offset) {
             // aligned page read
 #if defined(DEBUG)
-            log(3,"%s: pos=0x%06lx page=%-5ld nbytes=0x%03lx\n",
-                __func__, pos, page, nbytes);
+            if (dbg)
+                log(3,"%s: offs=0x%06lx page=%-5ld nbytes=0x%03lx\n",
+                    __func__, offs, page, nbytes);
 #endif
             read_page(page, data, nbytes);
             page = rda_to_vda(l->next_rda);
             data += nbytes;
             done += nbytes;
             size -= nbytes;
-        } else if ((off_t)(pos + nbytes) > offs) {
+            if (nbytes < PAGESZ)
+               break;
+        } else if ((off_t)(offs + PAGESZ) > offset) {
             // partial page read
-            off_t from = offs - pos;
+            off_t from = offset - offs;
             nbytes -= from;
 #if defined(DEBUG)
-            log(3,"%s: pos=0x%06lx page=%-5ld nbytes=0x%03lx from=0x%03lx\n",
-                __func__, pos, page, nbytes, from);
+            if (dbg)
+                log(3,"%s: offs=0x%06lx page=%-5ld nbytes=0x%03lx from=0x%03lx\n",
+                    __func__, offs, page, nbytes, from);
 #endif
             char buff[PAGESZ];
             read_page(page, buff, PAGESZ);
@@ -1104,11 +1109,12 @@ size_t AltoFS::read_file(page_t leader_page_vda, char* data, size_t size, off_t 
             size -= nbytes;
         } else {
 #if defined(DEBUG)
-            log(4,"%s: pos=0x%06lx page=%-5ld (seeking to 0x%06lx)\n",
-                __func__, pos, page, offs);
+            if (dbg)
+                log(4,"%s: offs=0x%06lx page=%-5ld (seeking to 0x%06lx)\n",
+                    __func__, offs, page, offs);
 #endif
         }
-        pos += nbytes;
+        offs += nbytes;
     }
     return done;
 }
@@ -1120,7 +1126,7 @@ size_t AltoFS::read_file(page_t leader_page_vda, char* data, size_t size, off_t 
  * @param size number of bytes to write
  * @param offs start offset to write to
  */
-size_t AltoFS::write_file(page_t leader_page_vda, const char* data, size_t size, off_t offs)
+size_t AltoFS::write_file(page_t leader_page_vda, const char* data, size_t size, off_t offset, bool dbg)
 {
     afs_leader_t* lp = page_leader(leader_page_vda);
     afs_label_t* l = page_label(leader_page_vda);
@@ -1132,26 +1138,27 @@ size_t AltoFS::write_file(page_t leader_page_vda, const char* data, size_t size,
         "%s: The find_fileinfo(\"%s\") call returned NULL\n",
         __func__, fn.c_str());
 
-    off_t pos = 0;
+    off_t offs = 0;
     page_t page = rda_to_vda(l->next_rda);
 
     // See if offs is at or beyond last page
     if (static_cast<size_t>(offs) / PAGESZ >= info->statSize() / PAGESZ) {
         // In this case use the leader page's last page hint
         page = lp->last_page_hint.vda;
-        pos = (offs / PAGESZ) * PAGESZ;
+        offs = (offset / PAGESZ) * PAGESZ;
     }
 
     size_t done = 0;
     while (page && size > 0) {
         l = page_label(page);
         size_t nbytes = size < PAGESZ ? size : PAGESZ;
-        if (pos >= offs && l->nbytes == PAGESZ) {
+        if (offs >= offset && l->nbytes == PAGESZ) {
             // aligned page write
             l->nbytes = nbytes;
 #if defined(DEBUG)
-            log(3,"%s: pos=0x%06lx page=%-5ld nbytes=0x%03lx size=0x%06lx\n",
-                __func__, offs, page, nbytes, size);
+            if (dbg)
+                log(3,"%s: offs=0x%06lx page=%-5ld nbytes=0x%03lx size=0x%06lx\n",
+                    __func__, offs, page, nbytes, size);
 #endif
             write_page(page, data, nbytes);
             data += nbytes;
@@ -1164,22 +1171,26 @@ size_t AltoFS::write_file(page_t leader_page_vda, const char* data, size_t size,
             char buff[PAGESZ];
             read_page(page, buff, PAGESZ);  // get the current page
 #if defined(DEBUG)
-            log(3,"%s: pos=0x%06lx page=%-5ld nbytes=0x%03lx size=0x%06lx to=0x%03lx\n",
-                __func__, pos, page, nbytes, size, to);
+            if (dbg)
+                log(3,"%s: offs=0x%06lx page=%-5ld nbytes=0x%03lx size=0x%06lx to=0x%03lx\n",
+                    __func__, offs, page, nbytes, size, to);
 #endif
             memcpy(buff + to, data, nbytes);
-            write_page(page, buff, PAGESZ); // write the modified page
             l->nbytes = to + nbytes;
+            write_page(page, buff, l->nbytes); // write the modified page
             data += nbytes;
             done += nbytes;
             size -= nbytes;
+            if (l->nbytes < PAGESZ)
+                break;
         } else {
 #if defined(DEBUG)
-            log(4,"%s: pos=0x%06lx page=%-5ld (seeking to 0x%06lx)\n",
-                __func__, pos, page, offs);
+            if (dbg)
+                log(4,"%s: offs=0x%06lx page=%-5ld (seeking to 0x%06lx)\n",
+                    __func__, offs, page, offs);
 #endif
         }
-        pos += PAGESZ;
+        offs += PAGESZ;
         if (size > 0 && 0 == l->next_rda) {
             // Need to allocate a new page
             page = alloc_page(page);
@@ -1447,6 +1458,11 @@ void AltoFS::cleanup_afs()
 {
     delete root_dir;
     root_dir = 0;
+    if (dp0name) {
+        free(dp0name);
+        dp0name = 0;
+        dp1name = 0;
+    }
 }
 
 /**

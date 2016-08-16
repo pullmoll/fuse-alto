@@ -127,7 +127,11 @@ static int read_alto(const char *path, char *buf, size_t size, off_t offset, str
         return -ENOENT;
     if (offset >= info->st()->st_size)
         return 0;
-    return afs->read_file(info->leader_page_vda(), buf, size, offset);
+    size_t done = afs->read_file(info->leader_page_vda(), buf, size, offset);
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    info->setStatAtime(tv.tv_sec);
+    return done;
 }
 
 static int write_alto(const char *path, const char *buf, size_t size, off_t offset, struct fuse_file_info*)
@@ -138,7 +142,14 @@ static int write_alto(const char *path, const char *buf, size_t size, off_t offs
     afs_fileinfo* info = afs->find_fileinfo(path);
     if (!info)
         return -ENOENT;
-    return afs->write_file(info->leader_page_vda(), buf, size, offset);
+    size_t done = afs->write_file(info->leader_page_vda(), buf, size, offset);
+    size_t filesize = (size_t)(offset + done);
+    if (filesize > info->statSize())
+        info->setStatSize(filesize);
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    info->setStatMtime(tv.tv_sec);
+    return done;
 }
 
 static int truncate_alto(const char* path, off_t offset)

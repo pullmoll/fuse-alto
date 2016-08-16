@@ -30,8 +30,10 @@ public:
     int truncate_file(afs_fileinfo* info, off_t offset);
     int create_file(std::string path);
 
-    size_t read_file(page_t leader_page_vda, char* data, size_t size, off_t offs = 0);
-    size_t write_file(page_t leader_page_vda, const char* data, size_t size, off_t offs = 0);
+    size_t read_file(page_t leader_page_vda, char* data, size_t size,
+        off_t offset = 0, bool dbg = true);
+    size_t write_file(page_t leader_page_vda, const char* data, size_t size,
+        off_t offset = 0, bool dbg = true);
 
     int statvfs(struct statvfs* vfs);
 
