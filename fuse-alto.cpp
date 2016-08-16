@@ -7,6 +7,7 @@
  *******************************************************************************************/
 #define FUSE_USE_VERSION 26
 
+#include "config.h"
 #include <fuse.h>
 #include <string.h>
 #include <errno.h>
@@ -227,7 +228,7 @@ static const char* fuse_cap(unsigned flags)
     if (flags & FUSE_CAP_FLOCK_LOCKS)
         dst += snprintf(dst, sizeof(buff) - (size_t)(dst - buff), "%s", ", FLOCK_LOCKS");
     if (flags & FUSE_CAP_IOCTL_DIR)
-        dst += snprintf(dst, sizeof(buff) - (size_t)(dst - buff), "%s", ", IOCTL_DIR");
+        snprintf(dst, sizeof(buff) - (size_t)(dst - buff), "%s", ", IOCTL_DIR");
     return buff + 2;
 }
 #endif
@@ -264,6 +265,7 @@ int usage(const char* program)
 {
     const char* prog = strrchr(program, '/');
     prog = prog ? prog + 1 : program;
+    fprintf(stderr, "%s Version %s\n", prog, FUSE_ALTO_VERSION);
     fprintf(stderr, "usage: %s <mountpoint> [options] <disk image file(s)>\n", prog);
     fprintf(stderr, "Where [options] can be one or more of\n");
     fprintf(stderr, "    -v|--verbose           set verbose mode (can be repeated)\n");
@@ -355,6 +357,10 @@ int main(int argc, char *argv[])
 
     struct fuse_args args = FUSE_ARGS_INIT(argc, argv);
     int res = fuse_opt_parse(&args, NULL, opts_alto, fuse_opt_alto);
+    if (res) {
+        perror("fuse_opt_parse()");
+        exit(1);
+    }
 
     chan = fuse_mount(mountpoint, &args);
     if (!chan) {

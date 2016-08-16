@@ -43,8 +43,11 @@ private:
     afs_leader_t* page_leader(page_t vda);
     afs_label_t* page_label(page_t vda);
 
-    int read_disk_file(const char* name);
-    int read_single_disk(const char *name, afs_page_t* diskp);
+    int read_disk_file(std::string name);
+    int read_single_disk(std::string , afs_page_t* diskp);
+
+    int save_disk_file();
+    int save_single_disk(std::string name, afs_page_t* diskp);
 
     void dump_memory(char* data, size_t nwords);
     void dump_disk_block(page_t page);
@@ -59,6 +62,8 @@ private:
 
     int read_sysdir();
     int save_sysdir();
+    int save_disk_descriptor();
+
     int remove_sysdir_entry(std::string name);
     int rename_sysdir_entry(std::string name, std::string newname);
 
@@ -75,6 +80,7 @@ private:
     std::string altotime_to_str(afs_time_t at);
 
     word getword(afs_fa_t *fa);
+    int putword(afs_fa_t *fa, word w);
 
     int getBT(page_t page);
     void setBT(page_t page, int val);
@@ -85,10 +91,9 @@ private:
     int verify_headers();
     int validate_disk_descriptor();
     void fix_disk_descriptor();
-    void cleanup_afs();
 
     int  my_assert(int flag, const char *errmsg, ...);
-    void my_assert_or_die(int flag, const char *errmsg,...);
+    void my_assert_or_die(bool flag, const char *errmsg,...);
 
     void swabit(char *data, size_t size);
 
@@ -96,17 +101,17 @@ private:
     void string_to_filename(char *dst, std::string src);
 
     endian_t m_little;                  //!< The little vs. big endian test flag
-    afs_khd_t m_khd;                    //!< Storage for disk allocation datastructures: disk descriptor
+    afs_kdh_t m_kdh;                    //!< Storage for disk allocation datastructures: disk descriptor
     page_t m_bit_count;                 //!< Number of bits in bit_table
     std::vector<word> m_bit_table;      //!< bitmap for pages allocated
-    bool m_bit_table_dirty;             //!< Flag to tell when the bit_table was written to
+    bool m_disk_descriptor_dirty;             //!< Flag to tell when the bit_table was written to
     std::vector<char> m_sysdir;         //!< A copy of the on-disk SysDir file
     bool m_sysdir_dirty;                //!< Flag to tell when the sysdir was written to
     std::vector<afs_dv> m_files;        //!< The contents of SysDir as vector of files
     std::vector<afs_page_t> m_disk;     //!< Storage for the disk image for dp0 and (optionally) dp1
     bool m_doubledisk;                  //!< If doubledisk is true, then both of dp0 and dp1 are loaded
-    char *m_dp0name;                    //!< the name of the first disk image
-    char *m_dp1name;                    //!< the name of the second disk image, if any
+    std::string m_dp0name;              //!< the name of the first disk image
+    std::string m_dp1name;              //!< the name of the second disk image, if any
     int m_verbose;                      //!< verbosity value
     afs_fileinfo* m_root_dir;           //!< The root directory file info node
 };

@@ -163,6 +163,6 @@ typedef struct {
     word        def_versions_kept;      //!< 0 implies no multiple versions
     word        free_pages;             //!< Free pages left on the file system
     word        blank1[6];              //!< unused (0) space
-}   afs_khd_t;
+}   afs_kdh_t;
 
 #endif // !defined(_AFS_TYPES_H_)
