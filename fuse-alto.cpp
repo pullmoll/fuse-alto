@@ -36,16 +36,25 @@ static int create_alto(const char* path, mode_t mode, dev_t dev)
 {
     struct fuse_context* ctx = fuse_get_context();
     AltoFS* afs = reinterpret_cast<AltoFS*>(ctx->private_data);
+    int res;
 
     afs_fileinfo* info = afs->find_fileinfo(path);
-    if (info)
-        return -EEXIST;
-    int res = afs->create_file(path);
+    if (info) {
+        res = afs->unlink_file(info);
+        if (res < 0) {
+            printf("%s: unlink_file(\"%s\") returned %d\n",
+                __func__, path, res);
+            return res;
+        }
+    }
+
+    res = afs->create_file(path);
     if (res < 0) {
         printf("%s: create_file(\"%s\") returned %d\n",
             __func__, path, res);
         return res;
     }
+
     info = afs->find_fileinfo(path);
     // Something went really, really wrong
     if (!info) {
@@ -53,6 +62,7 @@ static int create_alto(const char* path, mode_t mode, dev_t dev)
             __func__);
         return -ENOSPC;
     }
+
     return 0;
 }
 

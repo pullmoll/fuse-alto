@@ -104,7 +104,7 @@ size_t afs_fileinfo::statBlocks() const
     return m_st.st_blocks;
 }
 
-size_t afs_fileinfo::statnLink() const
+size_t afs_fileinfo::statNLink() const
 {
     return m_st.st_nlink;
 }
@@ -159,7 +159,7 @@ void afs_fileinfo::setStatBlocks(size_t blocks)
     m_st.st_blocks = blocks;
 }
 
-void afs_fileinfo::setnLink(size_t count)
+void afs_fileinfo::setStatNLink(size_t count)
 {
     m_st.st_nlink = count;
 }
@@ -174,6 +174,7 @@ void afs_fileinfo::erase(int pos, int count)
         if (idx >= pos + count)
             break;
         m_children.erase(it);
+        m_st.st_nlink -= 1;
         idx++;
     }
 }
@@ -190,7 +191,9 @@ void afs_fileinfo::rename(std::string newname)
 
 void afs_fileinfo::insert(afs_fileinfo* child)
 {
-    std::vector<afs_fileinfo>::iterator it = m_children.begin(); m_children.insert(it, *child);
+    std::vector<afs_fileinfo>::iterator it = m_children.begin();
+    m_children.insert(it, *child);
+    m_st.st_nlink += 1;
 }
 
 bool afs_fileinfo::remove(afs_fileinfo* child)

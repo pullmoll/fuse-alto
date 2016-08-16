@@ -49,7 +49,7 @@ private:
     void dump_memory(char* data, size_t nwords);
     void dump_disk_block(page_t page);
 
-    int file_length(page_t leader_page_vda);
+    size_t file_length(page_t leader_page_vda);
 
     page_t rda_to_vda(word rda);
     word vda_to_rda(page_t vda);
@@ -86,31 +86,27 @@ private:
     void fix_disk_descriptor();
     void cleanup_afs();
 
-    int  my_assert(int flag, const char *errmsg, ...);	/* printf style */
-    void my_assert_or_die(int flag, const char *errmsg,...);	/* printf style */
+    int  my_assert(int flag, const char *errmsg, ...);
+    void my_assert_or_die(int flag, const char *errmsg,...);
 
     void swabit(char *data, size_t size);
 
     std::string filename_to_string(const char* src);
     void string_to_filename(char *dst, std::string src);
 
-    /**
-     * @brief The union's little.e is initialized to 1
-     * The little.l can be used for xor of words which need
-     * a byte swap on little endian machines.
-     */
-    endian_t little;
-    afs_khd_t khd;                      //!< Storage for disk allocation datastructures: disk descriptor
-    std::vector<word> bit_table;        //!< bitmap for pages allocated
-    page_t bit_count;                   //!< Number of bits in bit_table
+    endian_t m_little;                  //!< The little vs. big endian test flag
+    afs_khd_t m_khd;                    //!< Storage for disk allocation datastructures: disk descriptor
+    std::vector<word> m_bit_table;      //!< bitmap for pages allocated
+    page_t m_bit_count;                 //!< Number of bits in bit_table
     std::vector<char> m_sysdir;         //!< A copy of the on-disk SysDir file
+    bool m_sysdir_dirty;                //!< Flag to tell when the sysdir was written to
     std::vector<afs_dv> m_files;        //!< The contents of SysDir as vector of files
-    std::vector<afs_page_t> disk;       //!< Storage for the disk image for dp0 and (optionally) dp1
-    bool doubledisk;                    //!< If doubledisk is true, then both of dp0 and dp1 are loaded
-    char *dp0name;                      //!< the name of the first disk image
-    char *dp1name;                      //!< the name of the second disk image, if any
-    int verbose;                        //!< verbosity value
-    afs_fileinfo* root_dir;             //!< The root directory file info node
+    std::vector<afs_page_t> m_disk;     //!< Storage for the disk image for dp0 and (optionally) dp1
+    bool m_doubledisk;                  //!< If doubledisk is true, then both of dp0 and dp1 are loaded
+    char *m_dp0name;                    //!< the name of the first disk image
+    char *m_dp1name;                    //!< the name of the second disk image, if any
+    int m_verbose;                      //!< verbosity value
+    afs_fileinfo* m_root_dir;           //!< The root directory file info node
 };
 
 #endif // !defined(_ALTOFS_H_)

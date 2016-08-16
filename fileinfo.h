@@ -51,7 +51,7 @@ public:
     size_t statSize() const;
     size_t statBlockSize() const;
     size_t statBlocks() const;
-    size_t statnLink() const;
+    size_t statNLink() const;
 
     void setIno(ino_t ino);
     void setStatCtime(time_t t);
@@ -63,7 +63,7 @@ public:
     void setStatSize(size_t size);
     void setStatBlockSize(size_t blocksize);
     void setStatBlocks(size_t blocks);
-    void setnLink(size_t count);
+    void setStatNLink(size_t count);
 
     void erase(int pos, int count = 1);
     void erase(std::vector<afs_fileinfo>::iterator pos);
