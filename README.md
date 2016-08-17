@@ -4,14 +4,13 @@ A partially working FUSE driver for the Xerox Alto and Alto II file system.
 
 The code is based on L. Stewart's `aar.c` dated 1/18/93.
 
-Currently nothing is written back to a mounted disk image,
-but you can stat and read files.
+The in-memory image of the loaded disk(s) is written to a file with the same name
+you specified when when mounting, but with a `~` appended.
+This is to avoid modifying your original files until the outcome of fuse-alto is reasonable.
 
 Many (most) file operations now work, including renaming, removing,
-creating, truncating and reading or writing files.
-
-Remember: nothing is written back to the disk image file(s) you specified.
-Each time you mount a disk image it is in its original state.
+creating, truncating and reading or writing files. There are bugs, however, which probably
+destroy the integrity of a heavily modified disk image. The code is in its alpha stage!
 
 <strong>Note</strong>: Now using commas again to separate double disk filenames.
 
