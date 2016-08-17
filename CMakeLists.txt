@@ -22,3 +22,5 @@ include_directories("${FUSE_INCLUDE_DIR}")
 add_executable(fuse-alto fuse-alto.cpp altofs.cpp fileinfo.cpp)
 target_link_libraries(fuse-alto ${FUSE_LIBRARIES})
 
+install(TARGETS fuse-alto DESTINATION bin)
+install(FILES "${PROJECT_SOURCE_DIR}/README.md" DESTINATION share/doc/fuse-alto)
