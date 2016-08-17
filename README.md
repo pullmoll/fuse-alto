@@ -28,13 +28,14 @@ For cmake projects you should build outside of the source tree, like this:
 <pre>mkdir build
 cd build
 cmake .. -DCMAKE_BUILD_TYPE=Debug
+make
 cd ..
 </pre>
 Without <tt>-DCMAKE_BUILD_TYPE=Debug</tt> the default is to build a Release version.
 If you intend to install, you can specify <tt>-DCMAKE_INSTALL_PREFIX=/usr/local</tt> or
 perhaps <tt>-DCMAKE_INSTALL_PREFIX=$HOME</tt> to install to your own <tt>~/bin</tt> path.
 
-You can now run <tt>build/bin/fuse-alto</tt> or <tt>make install</tt> to have it on your path.
+You can now run <tt>build/bin/fuse-alto</tt> or add <tt>make install</tt> or <tt>sudo make install</tt> to the lines above to make <tt>fuse-alto</tt> be installed in the search paths.
 
 #### Examples for using fuse-alto
 
