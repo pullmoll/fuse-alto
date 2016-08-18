@@ -498,20 +498,20 @@ page_t AltoFS::alloc_page(page_t page)
  */
 page_t AltoFS::find_file(const char *name)
 {
-    int i, last;
+    page_t page, last;
     afs_label_t* l;
     afs_leader_t* lp;
 
     // Use linear search !
     last = m_doubledisk ? NPAGES * 2 : NPAGES;
-    for (i = 0; i < last; i += 1) {
-        l = page_label(i);
-        lp = page_leader (i);
+    for (page = 0; page < last; page++) {
+        l = page_label(page);
+        lp = page_leader(page);
         // First file page and actually a file?
         if (l->filepage == 0 && l->fid_file == 1) {
             std::string fn = filename_to_string(lp->filename);
             if (fn.compare(name) == 0)
-                return i;
+                return page;
         }
     }
     my_assert(0, "%s: File %s not found\n", __func__, name);
@@ -781,7 +781,6 @@ int AltoFS::unlink_file(afs_fileinfo* info)
 
     // FIXME: What needs to be zapped?
     memset(lp->filename, 0, sizeof(lp->filename));
-    memset(&lp->dir_fp_hint, 0, sizeof(lp->dir_fp_hint));
     memset(&lp->last_page_hint, 0, sizeof(lp->last_page_hint));
 
     page_t page = info->leader_page_vda();
@@ -963,7 +962,6 @@ int AltoFS::create_file(std::string path)
 
     // Get the SysDir info
     afs_leader_t* lp = page_leader(page);
-    afs_label_t* l = page_label(page);
 
     struct timeval tv;
     gettimeofday(&tv, NULL);
@@ -975,11 +973,15 @@ int AltoFS::create_file(std::string path)
 
     string_to_filename(lp->filename, path);
 
-    lp->dir_fp_hint.fid_dir = 0;            // or 0x8000?
-    lp->dir_fp_hint.serialno = l->fid_id;   // FIXME: serialno == id?
+#if 0 // FIXME: disabled until it's clear what the dir_fp_hint should be
+    lp->dir_fp_hint.fid_dir = 0x8000;       // or 0x8000?
+    // We need the SysDir serialno here
+    lp->dir_fp_hint.serialno = 0;
     lp->dir_fp_hint.version = 1;            // version must be 1
     lp->dir_fp_hint.blank = 0;
-    lp->dir_fp_hint.leader_vda = page;      // let's assume this means our own leader page
+    // We need the SysDir leader page number here!
+    lp->dir_fp_hint.leader_vda = sydir_page;
+#endif
 
     page_t page0 = alloc_page(page);
     my_assert(page0 != 0,
@@ -1655,14 +1657,14 @@ int AltoFS::validate_disk_descriptor()
     return ok;
 }
 
-afs_leader_t* AltoFS::scan_prev_rdas(page_t vda)
+page_t AltoFS::scan_prev_rdas(page_t vda)
 {
     afs_label_t* l = page_label(vda);
     while (l->prev_rda != 0) {
         vda = rda_to_vda(l->prev_rda);
         l = page_label(vda);
     }
-    return page_leader(vda);
+    return vda;
 }
 
 /**
@@ -1678,14 +1680,19 @@ void AltoFS::fix_disk_descriptor()
         if (getBT(page) != (t ^ 1)) {
             // Find the leader page and print info about
             // the wrong bit in the table.
-            afs_leader_t* lp = scan_prev_rdas(page);
+            page_t leader_vda =  scan_prev_rdas(page);
+            afs_leader_t* lp = page_leader(leader_vda);
             if (lp) {
                 afs_label_t* l = page_label(page);
                 std::string fn = filename_to_string(lp->filename);
                 if (fn.empty())
                     fn = "<empty>";
-                log(0, "%s: page:%-4ld filepage: %-4u was marked as %s for filename:'%s'\n",
-                    __func__, page, l->filepage, getBT(page) ? "used" : "free", fn.c_str());
+                size_t length = file_length(leader_vda);
+                if (static_cast<ssize_t>(length) < 0)
+                    length = 0;
+                log(0, "Page:%-4ld filepage:%-4u was '%s' for '%s' length:%ld pages:%ld\n",
+                    page, l->filepage, getBT(page) ? "used" : "free",
+                    fn.c_str(), length, (length + PAGESZ - 1) / PAGESZ);
             }
             setBT(page, t ^ 1);
         }

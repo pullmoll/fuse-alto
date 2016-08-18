@@ -90,7 +90,7 @@ private:
 
     int verify_headers();
     int validate_disk_descriptor();
-    afs_leader_t* scan_prev_rdas(page_t vda);
+    page_t scan_prev_rdas(page_t vda);
     void fix_disk_descriptor();
 
     bool my_assert(bool flag, const char *errmsg, ...);
