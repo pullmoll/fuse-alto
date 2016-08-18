@@ -1495,9 +1495,10 @@ int AltoFS::getBT(page_t page)
         "%s: page out of bounds (%d)\n",
         __func__, page))
         return 1;
-    int bit;
-    bit = 15 - (page % 16);
-    return (m_bit_table[page / 16] >> bit) & 1;
+    int offs = page / 16;
+    // int bit = page % 16;
+    int bit = 15 - (page % 16);
+    return (m_bit_table[offs] >> bit) & 1;
 }
 
 /**
@@ -1511,10 +1512,10 @@ void AltoFS::setBT(page_t page, int val)
         "%s: page out of bounds (%d)\n",
         __func__, page))
         return;
-    int offs, bit;
-    offs = page / 16;
-    bit = 15 - (page % 16);
-    if (val != ((m_bit_table[page / 16] >> bit) & 1)) {
+    int offs = page / 16;
+    // int bit = page % 16;
+    int bit = 15 - (page % 16);
+    if (val != ((m_bit_table[offs] >> bit) & 1)) {
         m_bit_table[offs] = (m_bit_table[offs] & ~(1 << bit)) | ((val & 1) << bit);
         m_disk_descriptor_dirty = true;
     }
@@ -1677,7 +1678,7 @@ void AltoFS::fix_disk_descriptor()
     for (int page = 0; page < last; page++) {
         int t = is_page_free(page);
         nfree += t;
-        if (getBT(page) != (t ^ 1)) {
+        if (getBT(page) != (t == 0)) {
             // Find the leader page and print info about
             // the wrong bit in the table.
             page_t leader_vda =  scan_prev_rdas(page);
@@ -1688,13 +1689,14 @@ void AltoFS::fix_disk_descriptor()
                 if (fn.empty())
                     fn = "<empty>";
                 size_t length = file_length(leader_vda);
+                size_t pages = (length + PAGESZ - 1) / PAGESZ;
                 if (static_cast<ssize_t>(length) < 0)
                     length = 0;
-                log(0, "Page:%-4ld filepage:%-4u was '%s' for '%s' length:%ld pages:%ld\n",
+                log(0, "Page:%-4ld filepage:%-4u marked as '%s' for '%s', %ld pages, %ld bytes\n",
                     page, l->filepage, getBT(page) ? "used" : "free",
-                    fn.c_str(), length, (length + PAGESZ - 1) / PAGESZ);
+                    fn.c_str(), pages, length);
             }
-            setBT(page, t ^ 1);
+            setBT(page, t == 0);
         }
     }
     m_kdh.free_pages = nfree;
