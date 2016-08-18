@@ -433,6 +433,7 @@ page_t AltoFS::alloc_page(page_t page)
     }
 
     m_kdh.free_pages -= 1;
+    m_disk_descriptor_dirty = true;
     setBT(page, 1);
     zero_page(page);
 
@@ -458,6 +459,7 @@ page_t AltoFS::alloc_page(page_t page)
         lthis->fid_id = m_kdh.last_sn.sn[m_little.l];
         m_kdh.last_sn.sn[m_little.l] += 1;
         lthis->nbytes = PAGESZ;
+        m_disk_descriptor_dirty = true;
     }
 
 #if defined(DEBUG)
@@ -693,7 +695,7 @@ int AltoFS::save_disk_descriptor()
     for (word i = 0; i < m_kdh.disk_bt_size; i++)
         putword(&fa, m_bit_table[i]);
 
-    m_disk_descriptor_dirty = 0;
+    m_disk_descriptor_dirty = false;
     return 0;
 }
 
@@ -953,12 +955,10 @@ int AltoFS::create_file(std::string path)
     if (path[0] == '/')
         path.erase(0, 1);
 
-    // Allocate a free page
+    // Allocate a free page as the leader page
     page_t page = alloc_page(0);
-    my_assert(page != 0,
-        "%s: Found no free page\n",
-        __func__);
-    if (0 == page)
+
+    if (!my_assert(page != 0, "%s: Found no free page\n", __func__))
         return -ENOSPC;
 
     // Get the SysDir info
@@ -1557,6 +1557,7 @@ void AltoFS::free_page(page_t page, word id)
     l->fid_id = 0xffff;
     // count as freed if marked as in use
     m_kdh.free_pages += getBT(page);
+    m_disk_descriptor_dirty = true;
     // mark as freed
     setBT(page, 0);
 }
@@ -1617,8 +1618,8 @@ int AltoFS::validate_disk_descriptor()
     fa.char_pos = sizeof(m_kdh);
     for (word i = 0; i < m_kdh.disk_bt_size; i++)
         m_bit_table[i] = getword(&fa);
-    m_disk_descriptor_dirty = 0;
-    log(0, "%s: bit table size is %u words (%u bits)\n", __func__, m_kdh.disk_bt_size, m_bit_count);
+    m_disk_descriptor_dirty = false;
+    log(0, "%s: The bit table size is %u words (%u bits)\n", __func__, m_kdh.disk_bt_size, m_bit_count);
     ok = 1;
 
     if (m_doubledisk) {
@@ -1654,6 +1655,16 @@ int AltoFS::validate_disk_descriptor()
     return ok;
 }
 
+afs_leader_t* AltoFS::scan_prev_rdas(page_t vda)
+{
+    afs_label_t* l = page_label(vda);
+    while (l->prev_rda != 0) {
+        vda = rda_to_vda(l->prev_rda);
+        l = page_label(vda);
+    }
+    return page_leader(vda);
+}
+
 /**
  * @brief Rebuild bit table and free page count from labels.
  */
@@ -1665,14 +1676,22 @@ void AltoFS::fix_disk_descriptor()
         int t = is_page_free(page);
         nfree += t;
         if (getBT(page) != (t ^ 1)) {
-            // TODO: try to find filename which this page was allocted to?
-            // Follow the chain of label->prev_rda until it is == 0,
-            // then inspect the filename stored in the leader page.
-            // Build a list of chains already reported to compact the output.
+            // Find the leader page and print info about
+            // the wrong bit in the table.
+            afs_leader_t* lp = scan_prev_rdas(page);
+            if (lp) {
+                afs_label_t* l = page_label(page);
+                std::string fn = filename_to_string(lp->filename);
+                if (fn.empty())
+                    fn = "<empty>";
+                log(0, "%s: page:%-4ld filepage: %-4u was marked as %s for filename:'%s'\n",
+                    __func__, page, l->filepage, getBT(page) ? "used" : "free", fn.c_str());
+            }
             setBT(page, t ^ 1);
         }
     }
     m_kdh.free_pages = nfree;
+    m_disk_descriptor_dirty = false;
 
     // Count free pages in bit table - again
     nfree = 0;
@@ -1691,9 +1710,9 @@ void AltoFS::fix_disk_descriptor()
  *
  * @param flag if zero, print the assert message
  * @param errmsg message format (printf style)
- * @return the flag
+ * @return true if the assert is ok, false otherwise
  */
-int AltoFS::my_assert(int flag, const char *errmsg, ...)
+bool AltoFS::my_assert(bool flag, const char *errmsg, ...)
 {
     if (flag)
         return flag;
@@ -1711,9 +1730,8 @@ int AltoFS::my_assert(int flag, const char *errmsg, ...)
  * As opposed to assert(), this function is in debug and release
  * builds. This version exits if the assertion fails.
  *
- * @param flag if zero, print the assert message
+ * @param flag if false, print the assert message and exit with returncode 1
  * @param errmsg message format (printf style)
- * @return the flag
  */
 void AltoFS::my_assert_or_die(bool flag, const char *errmsg, ...)
 {

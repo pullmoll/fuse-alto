@@ -90,9 +90,10 @@ private:
 
     int verify_headers();
     int validate_disk_descriptor();
+    afs_leader_t* scan_prev_rdas(page_t vda);
     void fix_disk_descriptor();
 
-    int  my_assert(int flag, const char *errmsg, ...);
+    bool my_assert(bool flag, const char *errmsg, ...);
     void my_assert_or_die(bool flag, const char *errmsg,...);
 
     void swabit(char *data, size_t size);
@@ -104,7 +105,7 @@ private:
     afs_kdh_t m_kdh;                    //!< Storage for disk allocation datastructures: disk descriptor
     page_t m_bit_count;                 //!< Number of bits in bit_table
     std::vector<word> m_bit_table;      //!< bitmap for pages allocated
-    bool m_disk_descriptor_dirty;             //!< Flag to tell when the bit_table was written to
+    bool m_disk_descriptor_dirty;       //!< Flag to tell when the bit_table was written to
     std::vector<char> m_sysdir;         //!< A copy of the on-disk SysDir file
     bool m_sysdir_dirty;                //!< Flag to tell when the sysdir was written to
     std::vector<afs_dv> m_files;        //!< The contents of SysDir as vector of files
