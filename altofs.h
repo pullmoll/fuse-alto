@@ -26,9 +26,9 @@ public:
 
     afs_fileinfo* find_fileinfo(std::string path) const;
 
-    int unlink_file(afs_fileinfo* info);
-    int rename_file(afs_fileinfo* info, std::string newname);
-    int truncate_file(afs_fileinfo* info, off_t offset);
+    int unlink_file(std::string path);
+    int rename_file(std::string path, std::string newname);
+    int truncate_file(std::string path, off_t offset);
     int create_file(std::string path);
     int set_times(std::string path, const timespec tv[]);
 

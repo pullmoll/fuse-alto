@@ -9,6 +9,9 @@
  *******************************************************************************************/
 #include "altofs.h"
 
+#define FIX_FREE_PAGE_BITS   1 //!< Set to 1 to fix pages marked as free in the bit_table
+#define SWAP_GETPUT_WORD     0
+
 AltoFS::AltoFS() :
     m_little(),
     m_kdh(),
@@ -595,7 +598,7 @@ int AltoFS::read_sysdir()
         afs_leader_t* lp = page_leader(pdv->fileptr.leader_vda);
         byte fnlen2 = lp->filename[lsb()];
         log(3,"%s:* directory entry    : @%u **************\n", __func__, (word)((char *)pdv - m_sysdir.data()));
-        log(3,"%s:  type               : %u (%s)\n", __func__, type, 4 == type ? "file" : "deleted?");
+        log(3,"%s:  type               : %u (%s)\n", __func__, type, 4 == type ? "allocated" : "deleted");
         log(3,"%s:  length             : %u\n", __func__, length);
         log(3,"%s:  fileptr.fid_dir    : %#x\n", __func__, pdv->fileptr.fid_dir);
         log(3,"%s:  fileptr.serialno   : %#x\n", __func__, pdv->fileptr.serialno);
@@ -806,8 +809,16 @@ int AltoFS::rename_sysdir_entry(std::string name, std::string newname)
  * @param info pointer to afs_fileinfo_t describing the file
  * @return 0 on success, or -EPERM, -ENOMEM etc. on error
  */
-int AltoFS::unlink_file(afs_fileinfo* info)
+int AltoFS::unlink_file(std::string path)
 {
+    log(1,"%s: path=%s\n", __func__, path.c_str());
+    // Skip leading directory (we have only root)
+    if (path[0] == '/')
+        path.erase(0, 1);
+    afs_fileinfo* info = find_fileinfo(path);
+    if (!info)
+        return -ENOENT;
+
     afs_leader_t* lp = page_leader(info->leader_page_vda());
     std::string fn = filename_to_string(lp->filename);
 
@@ -858,14 +869,21 @@ int AltoFS::unlink_file(afs_fileinfo* info)
  * @param newname new filename
  * @return 0 on success, or -ENOENT on error
  */
-int AltoFS::rename_file(afs_fileinfo* info, std::string newname)
+int AltoFS::rename_file(std::string path, std::string newname)
 {
-    afs_leader_t* lp = page_leader(info->leader_page_vda());
-    std::string fn = filename_to_string(lp->filename);
+    log(1,"%s: path=%s\n", __func__, path.c_str());
+    // Skip leading directory (we have only root)
+    if (path[0] == '/')
+        path.erase(0, 1);
+    afs_fileinfo* info = find_fileinfo(path);
+    if (!info)
+        return -ENOENT;
 
     // Skip leading directory (we have only root)
     if (newname[0] == '/')
         newname.erase(0,1);
+    afs_leader_t* lp = page_leader(info->leader_page_vda());
+    std::string fn = filename_to_string(lp->filename);
 
     int ok = my_assert(newname.length() < FNLEN-2,
         "%s: newname too long for '%s' -> '%s'\n",
@@ -887,8 +905,16 @@ int AltoFS::rename_file(afs_fileinfo* info, std::string newname)
  * @param offset new size of the file
  * @return 0 on success, or -ENOENT on error
  */
-int AltoFS::truncate_file(afs_fileinfo* info, off_t offset)
+int AltoFS::truncate_file(std::string path, off_t offset)
 {
+    log(1,"%s: path=%s\n", __func__, path.c_str());
+    // Skip leading directory (we have only root)
+    if (path[0] == '/')
+        path.erase(0, 1);
+    afs_fileinfo* info = find_fileinfo(path);
+    if (!info)
+        return -ENOENT;
+
     afs_leader_t* lp = page_leader(info->leader_page_vda());
     afs_label_t* l = page_label(info->leader_page_vda());
     const word id = l->fid_id;
@@ -981,14 +1007,12 @@ int AltoFS::truncate_file(afs_fileinfo* info, off_t offset)
 int AltoFS::create_file(std::string path)
 {
     log(1,"%s: path=%s\n", __func__, path.c_str());
-
-    afs_fileinfo* info = find_fileinfo(path);
-    if (info)
-        return -EEXIST;
-
     // Skip leading directory (we have only root)
     if (path[0] == '/')
         path.erase(0, 1);
+    afs_fileinfo* info = find_fileinfo(path);
+    if (info)
+        return -EEXIST;
 
     // Allocate a free page as the leader page
     page_t page = alloc_page(0);
@@ -1078,13 +1102,12 @@ int AltoFS::create_file(std::string path)
 int AltoFS::set_times(std::string path, const struct timespec tv[])
 {
     log(1,"%s: path=%s\n", __func__, path.c_str());
-    afs_fileinfo* info = find_fileinfo(path);
-    if (!info)
-        return -ENOENT;
-
     // Skip leading directory (we have only root)
     if (path[0] == '/')
         path.erase(0, 1);
+    afs_fileinfo* info = find_fileinfo(path);
+    if (!info)
+        return -ENOENT;
 
     afs_leader_t* lp = page_leader(info->leader_page_vda());
     // FIXME: we should not be setting the ctime, but then...
@@ -1479,8 +1502,10 @@ word AltoFS::getword(afs_fa_t *fa)
         __func__, fa->vda, l->filepage);
 
     w = m_disk[fa->vda].data[fa->char_pos >> 1];
+#if SWAP_GETPUT_WORD
     if (lsb())
         w = (w >> 8) | (w << 8);
+#endif
 
     fa->char_pos += 2;
     return w;
@@ -1504,8 +1529,10 @@ int AltoFS::putword(afs_fa_t* fa, word w)
     }
     l->filepage = fa->filepage;
 
+#if SWAP_GETPUT_WORD
     if (lsb())
         w = (w >> 8) | (w << 8);
+#endif
     m_disk[fa->vda].data[fa->char_pos >> 1] = w;
 
     fa->char_pos += 2;
@@ -1549,21 +1576,6 @@ void AltoFS::setBT(page_t page, int val)
         m_bit_table[offs] = (m_bit_table[offs] & ~(1 << bit)) | ((val & 1) << bit);
         m_disk_descriptor_dirty = true;
     }
-}
-
-/**
- * @brief Return the number of 1 bits in a word
- * @param val 16 bits
- * @return number of bits set
- */
-word bit_count(word val)
-{
-    val -= ((val >> 1) & 0x5555);
-    val = (((val >> 2) & 0x3333) + (val & 0x3333));
-    val = (((val >> 4) + val) & 0x0f0f);
-    val += (val >> 8);
-    val &= 31;
-    return val;
 }
 
 /**
@@ -1656,32 +1668,33 @@ int AltoFS::validate_disk_descriptor()
 
     if (m_doubledisk) {
         // For double disk systems
-        ok &= my_assert (m_kdh.nDisks == 2, "%s: Expect double disk system\n", __func__);
+        ok &= my_assert(m_kdh.nDisks == 2, "%s: Expect double disk system\n", __func__);
     } else {
         // for single disk systems
-        ok &= my_assert (m_kdh.nDisks == 1, "%s: Expect single disk system\n", __func__);
+        ok &= my_assert(m_kdh.nDisks == 1, "%s: Expect single disk system\n", __func__);
     }
-    ok &= my_assert (m_kdh.nTracks == NCYLS, "%s: KDH tracks != %d\n", __func__, NCYLS);
-    ok &= my_assert (m_kdh.nHeads == NHEADS, "%s: KDH heads != %d\n", __func__, NHEADS);
-    ok &= my_assert (m_kdh.nSectors == NSECS, "%s: KDH sectors != %d\n", __func__, NSECS);
-    ok &= my_assert (m_kdh.def_versions_kept == 0, "%s: defaultVersions != 0\n", __func__);
+    ok &= my_assert(m_kdh.nTracks == NCYLS, "%s: KDH tracks != %d\n", __func__, NCYLS);
+    ok &= my_assert(m_kdh.nHeads == NHEADS, "%s: KDH heads != %d\n", __func__, NHEADS);
+    ok &= my_assert(m_kdh.nSectors == NSECS, "%s: KDH sectors != %d\n", __func__, NSECS);
+    ok &= my_assert(m_kdh.def_versions_kept == 0, "%s: defaultVersions != 0\n", __func__);
 
     // Count free pages in bit table
     nfree = 0;
-    for (word idx = 0; idx < m_kdh.disk_bt_size; idx++)
-        nfree += 16 - bit_count(m_bit_table[idx]);
-    ok &= my_assert (nfree == m_kdh.free_pages,
-        "%s: Bit table count %d doesn't match KDH free pages %d\n",
+    for (int i = 0; i < m_bit_count; i++)
+        nfree += getBT(i) ? 0 : 1;
+
+    ok &= my_assert(nfree == m_kdh.free_pages,
+        "%s: Bit table free page count %d doesn't match KDH value %d\n",
         __func__, nfree, m_kdh.free_pages);
 
-    // Count free pages in actual image
+    // Count pages marked as unused in actual image
     nfree = 0;
     const page_t last = m_doubledisk ? NPAGES * 2 : NPAGES;
     for (page_t page = 0; page < last; page++)
         nfree += is_page_free(page);
 
-    ok &= my_assert (nfree == m_kdh.free_pages,
-        "%s: Actual free page count %d doesn't match KDH value %d\n",
+    ok &= my_assert(nfree == m_kdh.free_pages,
+        "%s: Disk image free page count %d doesn't match KDH value %d\n",
         __func__, nfree, m_kdh.free_pages);
 
     return ok;
@@ -1705,6 +1718,7 @@ void AltoFS::fix_disk_descriptor()
     int nfree = 0;
     int res;
 
+#if FIX_FREE_PAGE_BITS
     // First scan the disk image for free pages and fix up the bit table
     const page_t last = m_doubledisk ? NPAGES * 2 : NPAGES;
     for (page_t page = 0; page < last; page++) {
@@ -1712,6 +1726,7 @@ void AltoFS::fix_disk_descriptor()
         nfree += t;
         setBT(page, t == 0);
     }
+#endif
 
     res = make_fileinfo();
     if (0 == res)
@@ -1726,6 +1741,11 @@ void AltoFS::fix_disk_descriptor()
         for (size_t idx = 0; idx < m_files.size(); idx++) {
             afs_dv* file = &m_files.at(idx);
             afs_dv_t* dv = &file->data;
+            byte type = dv->typelength[lsb()];
+            byte fnlen = dv->filename[lsb()];
+            // Skip over deleted files
+            if (4 != type || 0 == fnlen)
+                continue;
             page_t page = dv->fileptr.leader_vda;
             afs_leader_t* lp = page_leader(page);
             afs_label_t* l0 = page_label(page);
@@ -1784,6 +1804,7 @@ void AltoFS::fix_disk_descriptor()
                 }
                 int idx = page / 16;
                 int bit = 15 - (page % 16);
+                // int bit = (page % 16);
                 new_bit_table[idx] |= 1 << bit;
                 nfree--;
                 page = rda_to_vda(l->next_rda);
@@ -1793,7 +1814,7 @@ void AltoFS::fix_disk_descriptor()
             }
             if (fixed) {
                 std::string fn = filename_to_string(lp->filename);
-                log(0, "%s: file '%s', %ld page%s, %ld bytes needed fixing\n",
+                log(0, "%s: file '%s', %ld page%s, %ld bytes was fixed\n",
                     __func__, fn.c_str(), pages, pages > 1 ? "s" : "", length);
                 if (m_verbose > 4)
                     dump_leader(lp);
@@ -1812,10 +1833,10 @@ void AltoFS::fix_disk_descriptor()
 
     // Count free pages in bit table - again
     nfree = 0;
-    for (size_t offs = 0; offs < m_kdh.disk_bt_size; offs++)
-        nfree += 16 - bit_count(m_bit_table[offs]);
+    for (int i = 0; i < m_bit_count; i++)
+        nfree += getBT(i) ? 0 : 1;
     my_assert (nfree == m_kdh.free_pages,
-        "%s: Bit table count %d doesn't match KDH free pages %d\n",
+        "%s: Bit table free page count %d doesn't match KDH value %d\n",
         __func__, nfree, m_kdh.free_pages);
 }
 

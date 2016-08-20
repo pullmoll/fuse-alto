@@ -42,7 +42,7 @@ static int create_alto(const char* path, mode_t mode, dev_t dev)
 
     afs_fileinfo* info = afs->find_fileinfo(path);
     if (info) {
-        res = afs->unlink_file(info);
+        res = afs->unlink_file(path);
         if (res < 0) {
             printf("%s: unlink_file(\"%s\") returned %d\n",
                 __func__, path, res);
@@ -91,14 +91,13 @@ static int readdir_alto(const char *path, void *buf, fuse_fill_dir_t filler, off
     struct fuse_context* ctx = fuse_get_context();
     AltoFS* afs = reinterpret_cast<AltoFS*>(ctx->private_data);
 
-    afs_fileinfo* info = afs->find_fileinfo(path);
+    afs_fileinfo* info = afs->find_fileinfo("/");
     if (!info)
         return -ENOENT;
 
     info->setStatUid(ctx->uid);
     info->setStatGid(ctx->gid);
     info->setStatMode(info->statMode() & ~ctx->umask);
-
     filler(buf, ".", info->st(), 0);
     filler(buf, "..", NULL, 0);
 
@@ -163,43 +162,27 @@ static int truncate_alto(const char* path, off_t offset)
 {
     struct fuse_context* ctx = fuse_get_context();
     AltoFS* afs = reinterpret_cast<AltoFS*>(ctx->private_data);
-
-    afs_fileinfo* info = afs->find_fileinfo(path);
-    if (!info)
-        return -ENOENT;
-    return afs->truncate_file(info, offset);
+    return afs->truncate_file(path, offset);
 }
 
 static int unlink_alto(const char *path)
 {
     struct fuse_context* ctx = fuse_get_context();
     AltoFS* afs = reinterpret_cast<AltoFS*>(ctx->private_data);
-
-    afs_fileinfo* info = afs->find_fileinfo(path);
-    if (!info)
-        return -ENOENT;
-    return afs->unlink_file(info);
+    return afs->unlink_file(path);
 }
 
 static int rename_alto(const char *path, const char* newname)
 {
     struct fuse_context* ctx = fuse_get_context();
     AltoFS* afs = reinterpret_cast<AltoFS*>(ctx->private_data);
-
-    afs_fileinfo* info = afs->find_fileinfo(path);
-    if (!info)
-        return -ENOENT;
-    return afs->rename_file(info, newname);
+    return afs->rename_file(path, newname);
 }
 
 static int utimens_alto(const char* path, const struct timespec tv[2])
 {
     struct fuse_context* ctx = fuse_get_context();
     AltoFS* afs = reinterpret_cast<AltoFS*>(ctx->private_data);
-
-    afs_fileinfo* info = afs->find_fileinfo(path);
-    if (!info)
-        return -ENOENT;
     return afs->set_times(path, tv);
 }
 
