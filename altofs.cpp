@@ -1574,8 +1574,7 @@ void AltoFS::free_page(page_t page, word id)
     l->fid_file = 0xffff;
     l->fid_dir = 0xffff;
     l->fid_id = 0xffff;
-    // count as freed if marked as in use
-    m_kdh.free_pages += getBT(page);
+    m_kdh.free_pages += 1;
     m_disk_descriptor_dirty = true;
     // mark as freed
     setBT(page, 0);
@@ -1888,18 +1887,20 @@ int AltoFS::statvfs(struct statvfs* vfs)
     if (NULL == m_root_dir)
         return -EBADF;
 
-    vfs->f_bsize = PAGESZ;
-    vfs->f_blocks = NPAGES;
-    if (m_doubledisk) {
-        vfs->f_frsize *= 2;
+    vfs->f_bsize = PAGESZ;              // File system block size.
+    vfs->f_frsize = PAGESZ;             // Fundamental file system block size (fragment size).
+    vfs->f_blocks = NPAGES;             // Total number of blocks on the file system, in units of f_frsize.
+    if (m_doubledisk)
         vfs->f_blocks *= 2;
-    }
-    vfs->f_bfree = m_kdh.free_pages;
-    vfs->f_bavail = m_kdh.free_pages;
-    vfs->f_files = m_root_dir->size();
-    // FIXME: Is there a way to determine the number of possible files?
-    vfs->f_ffree = 0;
-    // FIXME: this is without length byte and trailing dot, thus -2. Is this correct?
+    vfs->f_bfree = m_kdh.free_pages;    // Total number of free blocks.
+    vfs->f_bavail = m_kdh.free_pages;   // Total number of free blocks available to non-privileged processes.
+    vfs->f_files = m_files.size();      // Total number of file nodes (inodes) on the file system.
+    // Per 2 free pages we could create 1 file (leader page and 1st file page)
+    size_t inodes = m_kdh.free_pages / 2;
+    vfs->f_ffree = inodes;              // Total number of free file nodes (inodes).
+    vfs->f_favail = inodes;             // Total number of free file nodes (inodes) available to non-privileged processes.
+    vfs->f_fsid = m_kdh.last_sn.sn[1];  // File system ID number.
+    vfs->f_flag = ST_NOSUID | ST_NODEV | ST_NOEXEC;
     vfs->f_namemax = FNLEN-2;
     return 0;
 }
