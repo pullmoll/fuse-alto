@@ -95,7 +95,7 @@ typedef struct {
  */
 typedef struct {
     word        vda;                    //!< Virtual disk address
-    word        page_number;            //!< page number (0 to NPAGES-1)
+    word        filepage;               //!< file page (zero based)
     word        char_pos;               //!< Offset into the page (character position)
 }   afs_fa_t;
 

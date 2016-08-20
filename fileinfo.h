@@ -2,6 +2,7 @@
 #define _FILEINFO_H_
 
 #include <sys/stat.h>
+#include <cstddef>
 #include <string>
 #include <vector>
 

@@ -12,6 +12,7 @@
 #include <string.h>
 #include <errno.h>
 #include <stdint.h>
+#include <assert.h>
 #include "altofs.h"
 
 static int verbose = 0;
@@ -189,6 +190,17 @@ static int rename_alto(const char *path, const char* newname)
     return afs->rename_file(info, newname);
 }
 
+static int utimens_alto(const char* path, const struct timespec tv[2])
+{
+    struct fuse_context* ctx = fuse_get_context();
+    AltoFS* afs = reinterpret_cast<AltoFS*>(ctx->private_data);
+
+    afs_fileinfo* info = afs->find_fileinfo(path);
+    if (!info)
+        return -ENOENT;
+    return afs->set_times(path, tv);
+}
+
 static int statfs_alto(const char *path, struct statvfs* vfs)
 {
     struct fuse_context* ctx = fuse_get_context();
@@ -337,6 +349,8 @@ void shutdown_fuse()
 
 int main(int argc, char *argv[])
 {
+    assert(sizeof(afs_leader_t) == PAGESZ);
+
     memset(&fuse_ops, 0, sizeof(fuse_ops));
     if (argc < 3)
         return usage(argv[0]);
@@ -350,6 +364,7 @@ int main(int argc, char *argv[])
     fuse_ops.mknod = create_alto;
     fuse_ops.truncate = truncate_alto;
     fuse_ops.readdir = readdir_alto;
+    fuse_ops.utimens = utimens_alto;
     fuse_ops.statfs = statfs_alto;
     fuse_ops.init = init_alto;
 

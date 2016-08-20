@@ -29,6 +29,7 @@ public:
     int rename_file(afs_fileinfo* info, std::string newname);
     int truncate_file(afs_fileinfo* info, off_t offset);
     int create_file(std::string path);
+    int set_times(std::string path, const timespec tv[]);
 
     size_t read_file(page_t leader_page_vda, char* data, size_t size,
         off_t offset = 0, bool update = true);
@@ -51,6 +52,7 @@ private:
 
     void dump_memory(char* data, size_t nwords);
     void dump_disk_block(page_t page);
+    void dump_leader(afs_leader_t* lp);
 
     size_t file_length(page_t leader_page_vda);
 
