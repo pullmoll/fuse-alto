@@ -1,4 +1,4 @@
-#if !defined(_AFS_TYPES_H)
+#if !defined(_AFS_TYPES_H_)
 #define _AFS_TYPES_H_
 
 #include <stdio.h>
@@ -38,7 +38,7 @@ typedef ssize_t page_t;                 //!< Page number type
  */
 typedef union {
     uint16_t e;
-    uint8_t  l, h;
+    uint8_t  lh[2];
 } endian_t;
 
 /**

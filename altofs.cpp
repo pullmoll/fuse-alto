@@ -33,7 +33,7 @@ AltoFS::AltoFS() :
     m_little.e = 1;
 }
 
-AltoFS::AltoFS(const char* filename) :
+AltoFS::AltoFS(const char* filename, int verbosity) :
     m_little(),
     m_kdh(),
     m_bit_count(0),
@@ -46,7 +46,7 @@ AltoFS::AltoFS(const char* filename) :
     m_doubledisk(false),
     m_dp0name(),
     m_dp1name(),
-    m_verbose(0),
+    m_verbose(verbosity),
     m_root_dir(0)
 {
     /**
@@ -93,11 +93,19 @@ void AltoFS::log(int verbosity, const char* format, ...)
     fflush(stdout);
 }
 
+/**
+ * @brief Return the current verbosity level
+ * @return level (0 == silent)
+ */
 int AltoFS::verbosity() const
 {
     return m_verbose;
 }
 
+/**
+ * @brief Set the current verbosity level
+ * @param verbosity level (0 == silent)
+ */
 void AltoFS::setVerbosity(int verbosity)
 {
     m_verbose = verbosity;
@@ -116,7 +124,7 @@ afs_leader_t* AltoFS::page_leader(page_t vda)
     if (m_verbose > 3 && lp->proplength > 0) {
         if (is_page_free(vda))
             return lp;
-        if (lp->filename[m_little.l] == 0 || lp->filename[m_little.l] > FNLEN)
+        if (lp->filename[lsb()] == 0 || lp->filename[lsb()] > FNLEN)
             return lp;
         if (lp->dir_fp_hint.blank != 0)
             return lp;
@@ -158,14 +166,6 @@ afs_label_t* AltoFS::page_label(page_t vda)
  */
 int AltoFS::read_disk_file(std::string name)
 {
-    int ok;
-
-    ok = my_assert(sizeof(afs_leader_t) == PAGESZ,
-        "%s: sizeof(afs_leader_t) is not %d",
-        __func__, PAGESZ);
-    if (!ok)
-        return -ENOENT;
-
     int pos = name.find(',');
     if (pos > 0) {
         m_dp0name = std::string(name, 0, pos);
@@ -182,7 +182,7 @@ int AltoFS::read_disk_file(std::string name)
         "%s: disk resize(%d) failed",
         __func__, 2*NPAGES);
 
-    ok = read_single_disk(m_dp0name, &m_disk[0]);
+    int ok = read_single_disk(m_dp0name, &m_disk[0]);
     if (ok && m_doubledisk) {
         ok = read_single_disk(m_dp1name, &m_disk[NPAGES]);
     }
@@ -193,16 +193,13 @@ int AltoFS::read_disk_file(std::string name)
  * @brief Read a single file to the in-memory disk space
  * @param name file name
  * @param diskp pointer to the starting disk page
+ * @return true on success, or false on error
  */
-int AltoFS::read_single_disk(std::string name, afs_page_t* diskp)
+bool AltoFS::read_single_disk(std::string name, afs_page_t* diskp)
 {
     FILE *infile;
-    size_t bytes;
-    size_t totalbytes = 0;
-    size_t total = NPAGES * sizeof (afs_page_t);
-    char *dp = (char *)diskp;
-    int ok = 1;
-    int use_pclose = 0;
+    bool ok = true;
+    bool use_pclose = false;
 
     log(1,"%s: Reading disk image '%s'\n", __func__, name.c_str());
     // We conclude the disk image is compressed if the name ends with .Z
@@ -211,20 +208,19 @@ int AltoFS::read_single_disk(std::string name, afs_page_t* diskp)
         char* cmd = new char[name.size() + 10];
         sprintf(cmd, "zcat %s", name.c_str());
         infile = popen(cmd, "r");
+        my_assert_or_die(infile != NULL, "%s: popen failed on %s\n", __func__, cmd);
         delete[] cmd;
-        my_assert_or_die(infile != NULL,
-            "%s: popen failed on zcat %s\n",
-            __func__, name.c_str());
-        use_pclose = 1;
+        use_pclose = true;
     } else {
         infile = fopen (name.c_str(), "rb");
-        my_assert_or_die(infile != NULL,
-            "%s: fopen failed on Alto disk image file %s\n",
-            __func__, name.c_str());
+        my_assert_or_die(infile != NULL, "%s: fopen failed on %s\n", __func__, name.c_str());
     }
 
+    char *dp = reinterpret_cast<char *>(diskp);
+    size_t total = NPAGES * PAGESZ;
+    size_t totalbytes = 0;
     while (totalbytes < total) {
-        bytes = fread(dp, sizeof (char), total - totalbytes, infile);
+        size_t bytes = fread(dp, sizeof (char), total - totalbytes, infile);
         dp += bytes;
         totalbytes += bytes;
         ok = my_assert(!ferror(infile) && !feof(infile),
@@ -240,31 +236,36 @@ int AltoFS::read_single_disk(std::string name, afs_page_t* diskp)
     return ok;
 }
 
+/**
+ * @brief Save the in-memory disk image(s) to a file (or two files)
+ * @return 0 on success,
+ */
 int AltoFS::save_disk_file()
 {
-    int res = save_single_disk(m_dp0name + "~", &m_disk[0]);
-    if (m_doubledisk)
-        res &= save_single_disk(m_dp1name + "~", &m_disk[NPAGES]);
+    bool res = save_single_disk(m_dp0name, &m_disk[0]);
+    if (res && m_doubledisk)
+        res = save_single_disk(m_dp1name, &m_disk[NPAGES]);
     return res;
 }
 
-int AltoFS::save_single_disk(std::string name, afs_page_t* diskp)
+/**
+ * @brief Save a single disk image to a file
+ * @param name
+ * @param diskp
+ * @return true on success, or false on error
+ */
+bool AltoFS::save_single_disk(std::string name, afs_page_t* diskp)
 {
     FILE *outfile;
-    size_t bytes;
-    size_t totalbytes = 0;
-    size_t total = NPAGES * sizeof (afs_page_t);
-    char *dp = (char *)diskp;
-    int ok = 1;
+    bool ok = true;
 
-    // We conclude the disk image is compressed if the name ends with .Z~ or .Z
-    int pos = name.find(".Z~");
-    if (pos < 0)
-        pos = name.find(".Z");
-    if (pos > 0) {
+    // We conclude the disk image is compressed if the name ends with .Z
+    int pos = name.find(".Z");
+    if (pos > 0)
         // Remove the .Z~ or .Z extension, as we will save uncompressed
-        name.erase(pos, pos);
-    }
+        name.erase(pos);
+    // For now always write backup files
+    name += "~";
     log(1,"%s: Writing disk image '%s'\n", __func__, name.c_str());
 
     outfile = fopen (name.c_str(), "wb");
@@ -272,12 +273,15 @@ int AltoFS::save_single_disk(std::string name, afs_page_t* diskp)
         "%s: fopen failed on Alto disk image file %s\n",
         __func__, name.c_str());
 
+    char *dp = reinterpret_cast<char *>(diskp);
+    size_t total = NPAGES * PAGESZ;
+    size_t totalbytes = 0;
     while (totalbytes < total) {
-        bytes = fwrite(dp, sizeof (char), total - totalbytes, outfile);
+        size_t bytes = fwrite(dp, sizeof (char), total - totalbytes, outfile);
         dp += bytes;
         totalbytes += bytes;
         ok = my_assert(!ferror(outfile),
-            "%s: Disk read failed: %d bytes written instead of %d\n",
+            "%s: Disk write failed: %d bytes written instead of %d\n",
             __func__, totalbytes, total);
         if (!ok)
             break;
@@ -301,8 +305,8 @@ void AltoFS::dump_memory(char* data, size_t nbytes)
         for (size_t col = 0; col < 8; col++) {
             size_t offs = row * 8 + col;
             if (offs < nwords) {
-                unsigned char h = data[(2*offs+0) ^ m_little.l];
-                unsigned char l = data[(2*offs+1) ^ m_little.l];
+                unsigned char h = data[(2*offs+0) ^ lsb()];
+                unsigned char l = data[(2*offs+1) ^ lsb()];
                 log(0," %02x%02x", h, l);
             } else {
                 log(0,"     ");
@@ -312,8 +316,8 @@ void AltoFS::dump_memory(char* data, size_t nbytes)
         for (size_t col = 0; col < 8; col++) {
             size_t offs = row * 8 + col;
             if (offs < nwords) {
-                unsigned char h = data[(2*offs+0) ^ m_little.l];
-                unsigned char l = data[(2*offs+1) ^ m_little.l];
+                unsigned char h = data[(2*offs+0) ^ lsb()];
+                unsigned char l = data[(2*offs+1) ^ lsb()];
                 str[(col * 2) + 0] = (isprint(h)) ? h : '.';
                 str[(col * 2) + 1] = (isprint(l)) ? l : '.';
             } else {
@@ -337,6 +341,10 @@ void AltoFS::dump_disk_block(page_t pageno)
     dump_memory(page, PAGESZ);
 }
 
+/**
+ * @brief Dump the contents of a leader page
+ * @param lp pointer to afs_leader_t
+ */
 void AltoFS::dump_leader(afs_leader_t* lp)
 {
     log(0, "%s: created                    : %s\n", __func__, altotime_to_str(lp->created).c_str());
@@ -366,19 +374,16 @@ void AltoFS::dump_leader(afs_leader_t* lp)
  */
 size_t AltoFS::file_length(page_t leader_page_vda)
 {
-    size_t length = 0;
     page_t page = leader_page_vda;
-    afs_label_t* label;
-
+    size_t length = 0;
     while (page != 0) {
-        label = page_label(page);
-        length += label->nbytes;
-        if (label->nbytes < PAGESZ)
+        afs_label_t* l = page_label(page);
+        if (l->filepage > 0)
+            length += l->nbytes;
+        if (l->nbytes < PAGESZ)
             break;
-        page = rda_to_vda(label->next_rda);
+        page = rda_to_vda(l->next_rda);
     }
-    // Subtract the leader page
-    length -= PAGESZ;
     return length;
 }
 
@@ -415,19 +420,21 @@ word AltoFS::vda_to_rda(page_t vda)
 /**
  * @brief Allocate a new page from the free pages.
  *
- * Scan for pages near the given page, always alternatinly looking
+ * Scan for pages near the given page, always alternatingly looking
  * at a page after and a page before the given page.
  *
  * @param filepage previous page VDA where this page is chained to
- * @return new page RDA, or 0 if no free page is found
+ * @return new page VDA, or 0 if no free page is found
  */
 page_t AltoFS::alloc_page(page_t page)
 {
     // Won't find a free page anyway
-    if (0 == m_kdh.free_pages)
+    if (0 == m_kdh.free_pages) {
+        log(0,"%s: KDH free pages is 0 - no free page found\n", __func__);
         return 0;
+    }
 
-    const page_t maxpage = m_kdh.disk_bt_size * sizeof(word);
+    const page_t maxpage = m_bit_count;
     const page_t prev_vda = page;
 
     afs_label_t* lprev = page ? page_label(page) : NULL;
@@ -478,8 +485,8 @@ page_t AltoFS::alloc_page(page_t page)
         lthis->filepage = 0;
         lthis->fid_file = 1;
         lthis->fid_dir = 0;
-        lthis->fid_id = m_kdh.last_sn.sn[m_little.l];
-        m_kdh.last_sn.sn[m_little.l] += 1;
+        lthis->fid_id = m_kdh.last_sn.sn[lsb()];
+        m_kdh.last_sn.sn[lsb()] += 1;
         lthis->nbytes = PAGESZ;
         m_disk_descriptor_dirty = true;
     }
@@ -562,60 +569,65 @@ int AltoFS::read_sysdir()
     m_sysdir.resize(sdsize + sizeof(afs_dv_t));
 
     read_file(info->leader_page_vda(), m_sysdir.data(), sdsize, false);
-    if (m_little.l)
+    if (lsb())
         swabit((char *)m_sysdir.data(), sdsize);
 
     const afs_dv_t* end = (afs_dv_t *)(m_sysdir.data() + sdsize);
     afs_dv_t* pdv = (afs_dv_t *)m_sysdir.data();
     size_t alloc = 0;
     size_t count = 0;
+    size_t deleted = 0;
     while (pdv < end) {
-        byte type = pdv->typelength[1];     // FIXME: little.l?
-        byte length = pdv->typelength[0];   // FIXME: little.h?
-
-        // End of directory if length is 0?
-        if (0 == length)
-            break;
+        byte type = pdv->typelength[lsb()];
+        byte length = pdv->typelength[msb()];
 
         // End of directory if fnlen is zero (?)
-        byte fnlen = pdv->filename[m_little.l];
+        byte fnlen = pdv->filename[lsb()];
         if (fnlen == 0 || fnlen > FNLEN)
             break;
 
         // length is always word aligned
         size_t nsize = (fnlen | 1) + 1;
         size_t esize = sizeof(*pdv) - sizeof(pdv->filename) + nsize;
+        std::string fn = filename_to_string(pdv->filename);
 
-        // Skip if deleted entry (?)
+        // Verify filename with leader page
+        afs_leader_t* lp = page_leader(pdv->fileptr.leader_vda);
+        byte fnlen2 = lp->filename[lsb()];
+        log(3,"%s:* directory entry    : @%u **************\n", __func__, (word)((char *)pdv - m_sysdir.data()));
+        log(3,"%s:  type               : %u (%s)\n", __func__, type, 4 == type ? "file" : "deleted?");
+        log(3,"%s:  length             : %u\n", __func__, length);
+        log(3,"%s:  fileptr.fid_dir    : %#x\n", __func__, pdv->fileptr.fid_dir);
+        log(3,"%s:  fileptr.serialno   : %#x\n", __func__, pdv->fileptr.serialno);
+        log(3,"%s:  fileptr.version    : %#x\n", __func__, pdv->fileptr.version);
+        log(3,"%s:  fileptr.blank      : %#x\n", __func__, pdv->fileptr.blank);
+        log(3,"%s:  fileptr.leader_vda : %u\n", __func__, pdv->fileptr.leader_vda);
+        log(3,"%s:  filename length    : %u (%u)\n", __func__, fnlen, fnlen2);
+        log(3,"%s:  filename           : %s\n", __func__, fn.c_str());
+        afs_dv dv(*pdv);
+        if (count >= alloc) {
+            alloc = alloc ? alloc * 2 : 32;
+            m_files.reserve(alloc);
+        }
+        m_files.resize(count+1);
+        m_files[count++] = dv;
+        afs_fileinfo* info = find_fileinfo(fn);
         if (4 == type) {
-
-            afs_dv dv(*pdv);
-            log(3,"%s:* directory entry    : @%u\n", __func__, (word)((char *)pdv - m_sysdir.data()));
-            log(3,"%s:  type               : %u\n", __func__, dv.data.typelength[1]); // FIXME: little.l?
-            log(3,"%s:  length             : %u\n", __func__, dv.data.typelength[0]); // FIXME: little.h?
-            log(3,"%s:  fileptr.fid_dir    : %#x\n", __func__, dv.data.fileptr.fid_dir);
-            log(3,"%s:  fileptr.serialno   : %#x\n", __func__, dv.data.fileptr.serialno);
-            log(3,"%s:  fileptr.version    : %#x\n", __func__, dv.data.fileptr.version);
-            log(3,"%s:  fileptr.blank      : %#x\n", __func__, dv.data.fileptr.blank);
-            log(3,"%s:  fileptr.leader_vda : %u\n", __func__, dv.data.fileptr.leader_vda);
-            log(3,"%s:  filename length    : %u\n", __func__, dv.data.filename[m_little.l]);
-            std::string fn = filename_to_string(dv.data.filename);
-            log(2,"%s:  filename           : %s.\n", __func__, fn.c_str());
-            if (count >= alloc) {
-                alloc = alloc ? alloc * 2 : 32;
-                m_files.reserve(alloc);
-            }
-            m_files.resize(count+1);
-            m_files[count++] = dv;
+            if (info)
+                info->setDeleted(false);
+        } else {
+            if (info)
+                info->setDeleted(true);
+            deleted++;
         }
         pdv = (afs_dv_t*)((char *)pdv + esize);
     }
 
     size_t eod = (size_t)((char *)pdv - m_sysdir.data());
-    log(1,"%s: SysDir usage is %lu/%lu bytes\n", __func__, eod, sdsize);
+    log(1,"%s: SysDir usage is %u files (%u deleted) in %lu/%lu bytes\n", __func__, count, deleted, eod, sdsize);
 
 #if defined(DEBUG)
-    if (m_verbose > 3)
+    if (m_verbose > 4)
         dump_memory(m_sysdir.data(), eod);
 #endif
 
@@ -644,7 +656,7 @@ int AltoFS::save_sysdir()
     size_t idx = 0;
     while (idx < m_files.size() && pdv < end) {
         const afs_dv* dv = &m_files[idx];
-        byte fnlen = dv->data.filename[m_little.l];
+        byte fnlen = dv->data.filename[lsb()];
         // length is always word aligned
         size_t nsize = (fnlen | 1) + 1;
         size_t esize = sizeof(*pdv) - sizeof(pdv->filename) + nsize;
@@ -656,7 +668,7 @@ int AltoFS::save_sysdir()
     if (idx < m_files.size()) {
         // We need to increase sdsize and write the last entry
         const afs_dv* dv = &m_files[idx];
-        byte fnlen = dv->data.filename[m_little.l];
+        byte fnlen = dv->data.filename[lsb()];
         // length is always word aligned
         size_t nsize = (fnlen | 1) + 1;
         size_t esize = sizeof(*pdv) - sizeof(pdv->filename) + nsize;
@@ -684,7 +696,7 @@ int AltoFS::save_sysdir()
     if (m_verbose > 3)
         dump_memory(m_sysdir.data(), eod);
 #endif
-    if (m_little.l) {
+    if (lsb()) {
         std::vector<char> sysdir(m_sysdir);
         swabit(sysdir.data(), sdsize);
         size_t written = write_file(info->leader_page_vda(), sysdir.data(), eod, false);
@@ -739,8 +751,7 @@ int AltoFS::remove_sysdir_entry(std::string name)
         if (fn != name)
             continue;
         // Just mark this entry as unused
-        // FIXME: little.l instead of 1?
-        dv->data.typelength[1] = 0;
+        dv->data.typelength[lsb()] = 0;
         log(2,"%s: found '%s' at index %ld\n", __func__, name.c_str(), idx);
         m_sysdir_dirty = true;
         return 0;
@@ -999,7 +1010,7 @@ int AltoFS::create_file(std::string path)
     string_to_filename(lp->filename, path);
 
     lp->dir_fp_hint.fid_dir = 0x8000;
-    lp->dir_fp_hint.serialno = m_kdh.last_sn.sn[0]; // FIXME: or 1 or m_little.l ?
+    lp->dir_fp_hint.serialno = m_kdh.last_sn.sn[lsb()];
     lp->dir_fp_hint.version = 1;            // version must be 1
     lp->dir_fp_hint.blank = 0;
     // We really need the SysDir leader page number here!
@@ -1048,13 +1059,13 @@ int AltoFS::create_file(std::string path)
         }
     }
 
-    dv->data.typelength[0] = path.length();                 // whatever "length" this is
-    dv->data.typelength[1] = 4;                             // this is an existing file
-    dv->data.fileptr.fid_dir = 0x0000;                      // this is not a directory;
-    dv->data.fileptr.serialno = m_kdh.last_sn.sn[1];        // FIXME: serialno is what?
-    dv->data.fileptr.version = 1;                           // The version is always == 1
-    dv->data.fileptr.blank = 0x0000;                        // And blank is, well, blank
-    dv->data.fileptr.leader_vda = page;                     // store the leader page
+    dv->data.typelength[0] = path.length();                     // whatever "length" this is
+    dv->data.typelength[1] = 4;                                 // this is an existing file
+    dv->data.fileptr.fid_dir = 0x0000;                          // this is not a directory;
+    dv->data.fileptr.serialno = m_kdh.last_sn.sn[lsb()];   // FIXME: serialno is what?
+    dv->data.fileptr.version = 1;                               // The version is always == 1
+    dv->data.fileptr.blank = 0x0000;                            // And blank is, well, blank
+    dv->data.fileptr.leader_vda = page;                         // store the leader page
     string_to_filename(dv->data.filename, path);
     m_sysdir_dirty = true;
 
@@ -1170,7 +1181,7 @@ int AltoFS::make_fileinfo_file(afs_fileinfo* parent, int leader_page_vda)
     altotime_to_tm(lp->created, tm_ctime);
     char ctime[40];
     strftime(ctime, sizeof(ctime), "%Y-%m-%d %H:%M:%S", &tm_ctime);
-    log(3,"%-40s %08o %5lu %9lu %s [%04x%04x]\n",
+    log(3,"%-40s %06o %5lu %9lu %s [%04x%04x]\n",
         info->name().c_str(), info->statMode(),
         info->statIno(), info->statSize(),
         ctime, lp->created.time[0], lp->created.time[1]);
@@ -1210,7 +1221,7 @@ void AltoFS::read_page(page_t filepage, char* data, size_t size)
 {
     const char *src = (char *)&m_disk[filepage].data;
     for (size_t i = 0; i < size; i++)
-        data[i] = src[i ^ m_little.l];
+        data[i] = src[i ^ lsb()];
 }
 
 /**
@@ -1222,7 +1233,7 @@ void AltoFS::write_page(page_t filepage, const char* data, size_t size)
 {
     char *dst = (char *)&m_disk[filepage].data;
     for (size_t i = 0; i < size; i++)
-        dst[i ^ m_little.l] = data[i];
+        dst[i ^ lsb()] = data[i];
 }
 
 /**
@@ -1465,7 +1476,7 @@ word AltoFS::getword(afs_fa_t *fa)
         __func__, fa->vda, l->filepage);
 
     w = m_disk[fa->vda].data[fa->char_pos >> 1];
-    if (m_little.l)
+    if (lsb())
         w = (w >> 8) | (w << 8);
 
     fa->char_pos += 2;
@@ -1490,7 +1501,7 @@ int AltoFS::putword(afs_fa_t* fa, word w)
     }
     l->filepage = fa->filepage;
 
-    if (m_little.l)
+    if (lsb())
         w = (w >> 8) | (w << 8);
     m_disk[fa->vda].data[fa->char_pos >> 1] = w;
 
@@ -1568,7 +1579,7 @@ void AltoFS::free_page(page_t page, word id)
     afs_label_t* l;
     l = page_label(page);
 
-    my_assert_or_die(l->fid_id == id,
+    my_assert_or_die(l->nbytes == 0 || (l->nbytes > 0 && l->fid_id == id),
         "%s: Fatal: the label id 0x%04x does not match the leader id 0x%04x\n",
         __func__, l->fid_id, id);
     l->fid_file = 0xffff;
@@ -1702,6 +1713,7 @@ void AltoFS::fix_disk_descriptor()
     res = make_fileinfo();
     if (0 == res)
         res = read_sysdir();
+
     if (0 == res) {
         // Create a new bit table
         std::vector<word> new_bit_table(m_kdh.disk_bt_size);
@@ -1713,29 +1725,76 @@ void AltoFS::fix_disk_descriptor()
             afs_dv_t* dv = &file->data;
             page_t page = dv->fileptr.leader_vda;
             afs_leader_t* lp = page_leader(page);
-            afs_label_t* l = page_label(page);
+            afs_label_t* l0 = page_label(page);
             size_t length = file_length(page);
             size_t pages = (length + PAGESZ - 1) / PAGESZ;
             bool fixed = false;
+            word filepage = 0;
+            size_t offs = 0;
             while (0 != page) {
+                word nbytes = PAGESZ;
+                size_t left = length - offs;
+                afs_label_t* l = page_label(page);
                 if (!getBT(page)) {
-                    std::string fn = filename_to_string(lp->filename);
-                    log(0, "%s: file '%s', %ld page%s, %ld bytes needs fixing\n",
-                        __func__, fn.c_str(), pages, pages > 1 ? "s" : "", length);
+                    // will be fixed below
                     log(0, "%s: page:%-4ld filepage:%-4u marked as '%s' is wrong\n",
-                        __func__, page, l->filepage, getBT(page) ? "used" : "free");
-                    if (m_verbose > 4)
-                        dump_leader(lp);
+                        __func__, page, filepage, getBT(page) ? "used" : "free");
                     fixed = true;
                 }
-                int offs = page / 16;
+                nbytes = l->nbytes;
+                if (filepage > 0 && left >= PAGESZ && nbytes < PAGESZ) {
+                    l->nbytes = PAGESZ;
+                    log(0, "%s: page:%-4ld filepage:%-4u nbytes:%u is wrong (should be:%u)\n",
+                        __func__, page, filepage, nbytes, l->nbytes);
+                    fixed = true;
+                }
+                if (filepage > 0 && left < PAGESZ && nbytes != left) {
+                    l->nbytes = left;
+                    log(0, "%s: page:%-4ld filepage:%-4u last page nbytes:%u is wrong (should be:%u)\n",
+                        __func__, page, filepage, nbytes, l->nbytes);
+                    fixed = true;
+                }
+                // The following checks are only relevant for pages where nbytes > 0
+                if (l->nbytes > 0 && l->filepage != filepage) {
+                    log(0, "%s: page:%-4ld filepage:%-4u filepage:%u is wrong\n",
+                        __func__, page, filepage, l->filepage);
+                    l->filepage = filepage;
+                    fixed = true;
+                }
+                if (l->nbytes > 0 && l->fid_file != l0->fid_file) {
+                    log(0, "%s: page:%-4ld filepage:%-4u fid_file:%u is wrong\n",
+                        __func__, page, filepage, l->fid_file);
+                    l->fid_file = l0->fid_file;
+                    fixed = true;
+                }
+                if (l->nbytes > 0 && l->fid_dir != l0->fid_dir) {
+                    log(0, "%s: page:%-4ld filepage:%-4u fid_dir:%u is wrong\n",
+                        __func__, page, filepage, l->fid_dir);
+                    l->fid_dir = l0->fid_dir;
+                    fixed = true;
+                }
+                if (l->nbytes > 0 && l->fid_id != l0->fid_id) {
+                    log(0, "%s: page:%-4ld filepage:%-4u fid_id:%#x is wrong\n",
+                        __func__, page, filepage, l->fid_id);
+                    l->fid_id = l0->fid_id;
+                    fixed = true;
+                }
+                int idx = page / 16;
                 int bit = 15 - (page % 16);
-                new_bit_table[offs] |= 1 << bit;
-                afs_label_t* l = page_label(page);
+                new_bit_table[idx] |= 1 << bit;
                 nfree--;
                 page = rda_to_vda(l->next_rda);
+                if (filepage > 0)
+                    offs += PAGESZ;
+                filepage++;
             }
-            if (!fixed) {
+            if (fixed) {
+                std::string fn = filename_to_string(lp->filename);
+                log(0, "%s: file '%s', %ld page%s, %ld bytes needed fixing\n",
+                    __func__, fn.c_str(), pages, pages > 1 ? "s" : "", length);
+                if (m_verbose > 4)
+                    dump_leader(lp);
+            } else {
                 std::string fn = filename_to_string(lp->filename);
                 log(4, "%s: file '%s', %ld page%s, %ld bytes verified ok\n",
                     __func__, fn.c_str(), pages, pages > 1 ? "s" : "", length);
@@ -1839,19 +1898,21 @@ std::string AltoFS::filename_to_string(const char* src)
     char* dst = buff;
     memset(buff, 0, sizeof(buff));
 
-    size_t length = src[m_little.l];
+    size_t length = src[lsb()];
+    if (0 == length)
+        return "";
     if (length < 0 || length >= FNLEN)
         length = FNLEN - 1;
-    for (size_t i = 0; i < length; i++)
-        dst[i] = src[i ^ m_little.l];
+    for (size_t i = 0; i < length+1; i++)
+        dst[i] = src[i ^ lsb()];
 
     // Replace invalid (non printing) characters with '#'
-    for (size_t i = 1; i < length; i++)
+    for (size_t i = 1; i < length+1; i++)
         dst[i] = isprint((unsigned char)dst[i]) ? dst[i] : '#';
 
-    // Erase the closing '.'
-    length = strlen(buff);
-    if ('.' == buff[--length])
+    // Erase a closing '.'
+    my_assert('.' == buff[length], "%s: Not dot at end of filename (%s)\n", __func__, dst+1);
+    if ('.' == buff[length])
         buff[length] = '\0';
 
     // Return the string after the length byte
@@ -1869,11 +1930,11 @@ void AltoFS::string_to_filename(char* dst, std::string src)
     size_t length = src.length() + 1;
     if (length >= FNLEN - 2)
         length = FNLEN - 2;
-    dst[m_little.l] = length;
+    dst[lsb()] = length;
     for (size_t i = 0; i < length; i++)
-        dst[(i+1) ^ m_little.l] = src[i];
+        dst[(i+1) ^ lsb()] = src[i];
     // Append a dot
-    dst[length ^ m_little.l] = '.';
+    dst[length ^ lsb()] = '.';
 }
 
 /**
@@ -1899,7 +1960,9 @@ int AltoFS::statvfs(struct statvfs* vfs)
     size_t inodes = m_kdh.free_pages / 2;
     vfs->f_ffree = inodes;              // Total number of free file nodes (inodes).
     vfs->f_favail = inodes;             // Total number of free file nodes (inodes) available to non-privileged processes.
-    vfs->f_fsid = m_kdh.last_sn.sn[1];  // File system ID number.
+    // File system ID number. Use the "serialno" stored in the disk header
+    vfs->f_fsid = m_kdh.last_sn.sn[lsb()];
+    // Flags: can't set uid, no devices, no executable files
     vfs->f_flag = ST_NOSUID | ST_NODEV | ST_NOEXEC;
     vfs->f_namemax = FNLEN-2;
     return 0;

@@ -5,15 +5,17 @@ afs_fileinfo::afs_fileinfo() :
     m_name(),
     m_st(),
     m_leader_page_vda(0),
+    m_deleted(true),
     m_children()
 {
 }
 
-afs_fileinfo::afs_fileinfo(afs_fileinfo* parent, std::string name, struct stat st, int vda) :
+afs_fileinfo::afs_fileinfo(afs_fileinfo* parent, std::string name, struct stat st, int vda, bool deleted) :
     m_parent(parent),
     m_name(name),
     m_st(st),
     m_leader_page_vda(vda),
+    m_deleted(deleted),
     m_children()
 {
 }
@@ -46,6 +48,21 @@ const struct stat* afs_fileinfo::st() const
 page_t afs_fileinfo::leader_page_vda() const
 {
     return m_leader_page_vda;
+}
+
+bool afs_fileinfo::deleted() const
+{
+    return m_deleted;
+}
+
+void afs_fileinfo::setDeleted(bool on)
+{
+    m_deleted = on;
+}
+
+int afs_fileinfo::size() const
+{
+    return m_children.size();
 }
 
 std::vector<afs_fileinfo*> afs_fileinfo::children() const

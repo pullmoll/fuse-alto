@@ -15,7 +15,7 @@ class afs_fileinfo
 {
 public:
     afs_fileinfo();
-    afs_fileinfo(afs_fileinfo* parent, std::string name, struct stat st, int vda);
+    afs_fileinfo(afs_fileinfo* parent, std::string name, struct stat st, int vda, bool deleted = true);
     ~afs_fileinfo();
 
     afs_fileinfo* parent() const;
@@ -23,7 +23,9 @@ public:
     struct stat* st();
     const struct stat* st() const;
     page_t leader_page_vda() const;
-    int size() const { return m_children.size(); }
+    bool deleted() const;
+    void setDeleted(bool on);
+    int size() const;
     std::vector<afs_fileinfo*> children() const;
     afs_fileinfo* child(int idx);
     const afs_fileinfo* child(int idx) const;
@@ -65,6 +67,7 @@ private:
     std::string m_name;                     //!< Filename
     struct stat m_st;                       //!< Status
     page_t m_leader_page_vda;               //!< Leader page of this file
+    bool m_deleted;                         //!< True, if the file is marked as deleted
     std::vector<afs_fileinfo*> m_children;  //!< Vector of child nodes
 };
 

@@ -106,6 +106,8 @@ static int readdir_alto(const char *path, void *buf, fuse_fill_dir_t filler, off
         afs_fileinfo* child = info->child(i);
         if (!child)
             continue;
+        if (child->deleted())
+            continue;
 
         child->setStatUid(ctx->uid);
         child->setStatGid(ctx->gid);
@@ -251,8 +253,7 @@ void* init_alto(fuse_conn_info* info)
 
     // FIXME: Where do I really get the "device" to mount?
     // Handling it on my own by using the last argv[] can't be right.
-    afs = new AltoFS(filenames);
-    afs->setVerbosity(verbose);
+    afs = new AltoFS(filenames, verbose);
 
 #if defined(DEBUG)
     if (verbose > 2) {
@@ -349,6 +350,7 @@ void shutdown_fuse()
 
 int main(int argc, char *argv[])
 {
+    assert(sizeof(afs_kdh_t) == 32);
     assert(sizeof(afs_leader_t) == PAGESZ);
 
     memset(&fuse_ops, 0, sizeof(fuse_ops));

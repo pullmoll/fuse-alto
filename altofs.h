@@ -10,6 +10,7 @@
 #if !defined(_ALTOFS_H_)
 #define _ALTOFS_H_
 
+#include "afs_types.h"
 #include "fileinfo.h"
 
 class AltoFS
@@ -17,7 +18,7 @@ class AltoFS
 public:
 
     AltoFS();
-    AltoFS(const char* filename);
+    AltoFS(const char* filename, int verbosity = 0);
     ~AltoFS();
 
     int verbosity() const;
@@ -45,10 +46,10 @@ private:
     afs_label_t* page_label(page_t vda);
 
     int read_disk_file(std::string name);
-    int read_single_disk(std::string , afs_page_t* diskp);
+    bool read_single_disk(std::string , afs_page_t* diskp);
 
     int save_disk_file();
-    int save_single_disk(std::string name, afs_page_t* diskp);
+    bool save_single_disk(std::string name, afs_page_t* diskp);
 
     void dump_memory(char* data, size_t nwords);
     void dump_disk_block(page_t page);
@@ -104,6 +105,8 @@ private:
     void string_to_filename(char *dst, std::string src);
 
     endian_t m_little;                  //!< The little vs. big endian test flag
+    int lsb() const { return m_little.lh[0]; }
+    int msb() const { return m_little.lh[1]; }
     afs_kdh_t m_kdh;                    //!< Storage for disk allocation datastructures: disk descriptor
     page_t m_bit_count;                 //!< Number of bits in bit_table
     std::vector<word> m_bit_table;      //!< bitmap for pages allocated
