@@ -22,7 +22,12 @@ afs_fileinfo::afs_fileinfo(afs_fileinfo* parent, std::string name, struct stat s
 
 afs_fileinfo::~afs_fileinfo()
 {
-    m_children.clear();
+    std::vector<afs_fileinfo*>::iterator it = m_children.begin();
+    while (it != m_children.end()) {
+        afs_fileinfo* child = m_children.at(0);
+        m_children.erase(it);
+        delete child;
+    }
 }
 
 afs_fileinfo* afs_fileinfo::parent() const

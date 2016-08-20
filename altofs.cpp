@@ -1039,8 +1039,11 @@ int AltoFS::create_file(std::string path)
     for (it = m_files.begin(); it != m_files.end(); it++) {
         afs_dv* dv = &m_files[idx];
         std::string fn = filename_to_string(dv->data.filename);
-        if (fn >= path) {
-            match = fn == path;
+        if (fn == path && 0 == dv->data.typelength[lsb()]) {
+            match = true;
+            break;
+        }
+        if (fn > path) {
             break;
         }
         idx++;
@@ -1050,11 +1053,11 @@ int AltoFS::create_file(std::string path)
     if (!match) {
         if (it == m_files.end()) {
             // Not the last entry, so make room
-            log(2,"%s: insert entry at SysDir pos=%d/%ld\n", __func__, idx, m_files.size());
+            log(2,"%s: insert entry at pos=%d/%ld in SysDir\n", __func__, idx, m_files.size());
             // Insert a new entry at idx
             m_files.insert(it, *dv);
         } else {
-            log(2,"%s: insert entry after SysDir at pos=%ld\n", __func__, m_files.size());
+            log(2,"%s: insert entry at pos=%ld at the end of SysDir\n", __func__, m_files.size());
             m_files[idx] = *dv;
         }
     }
