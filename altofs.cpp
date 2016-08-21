@@ -9,8 +9,8 @@
  *******************************************************************************************/
 #include "altofs.h"
 
-#define FIX_FREE_PAGE_BITS   1 //!< Set to 1 to fix pages marked as free in the bit_table
-#define SWAP_GETPUT_WORD     0
+#define FIX_FREE_PAGE_BITS   0 //!< Set to 1 to fix pages marked as free in the bit_table
+#define SWAP_GETPUT_WORD     msb()
 
 AltoFS::AltoFS() :
     m_little(),
@@ -1502,10 +1502,8 @@ word AltoFS::getword(afs_fa_t *fa)
         __func__, fa->vda, l->filepage);
 
     w = m_disk[fa->vda].data[fa->char_pos >> 1];
-#if SWAP_GETPUT_WORD
-    if (lsb())
+    if (SWAP_GETPUT_WORD)
         w = (w >> 8) | (w << 8);
-#endif
 
     fa->char_pos += 2;
     return w;
@@ -1529,10 +1527,8 @@ int AltoFS::putword(afs_fa_t* fa, word w)
     }
     l->filepage = fa->filepage;
 
-#if SWAP_GETPUT_WORD
-    if (lsb())
+    if (SWAP_GETPUT_WORD)
         w = (w >> 8) | (w << 8);
-#endif
     m_disk[fa->vda].data[fa->char_pos >> 1] = w;
 
     fa->char_pos += 2;
@@ -1758,7 +1754,7 @@ void AltoFS::fix_disk_descriptor()
                 word nbytes = PAGESZ;
                 size_t left = length - offs;
                 afs_label_t* l = page_label(page);
-                if (!getBT(page)) {
+                if (left > 0 && !getBT(page)) {
                     // will be fixed below
                     log(0, "%s: page:%-4ld filepage:%-4u marked as '%s' is wrong\n",
                         __func__, page, filepage, getBT(page) ? "used" : "free");
@@ -1802,11 +1798,13 @@ void AltoFS::fix_disk_descriptor()
                     l->fid_id = l0->fid_id;
                     fixed = true;
                 }
-                int idx = page / 16;
-                int bit = 15 - (page % 16);
-                // int bit = (page % 16);
-                new_bit_table[idx] |= 1 << bit;
-                nfree--;
+                if (left > 0) {
+                    int idx = page / 16;
+                    int bit = 15 - (page % 16);
+                    // int bit = (page % 16);
+                    new_bit_table[idx] |= 1 << bit;
+                    nfree--;
+                }
                 page = rda_to_vda(l->next_rda);
                 if (filepage > 0)
                     offs += PAGESZ;
