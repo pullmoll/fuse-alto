@@ -15,22 +15,40 @@
 #include <assert.h>
 #include "altofs.h"
 
+static struct fuse_args fuse_args;
 static int verbose = 0;
-static const char* mountpoint = NULL;
-static const char* filenames = NULL;
+static int nonopt_seen = 0;
+static char* mountpoint = NULL;
+static char* filenames = NULL;
 static struct fuse_chan* chan = NULL;
 static struct fuse* fuse = NULL;
-static struct fuse_operations fuse_ops;
+static struct fuse_operations* fuse_ops = NULL;
 static int foreground = 0;
 static int multithreaded = 1;
-static AltoFS* afs;
+static AltoFS* afs = 0;
+
+enum {
+    KEY_HELP,
+    KEY_FOREGROUND,
+    KEY_SINGLE_THREADED,
+    KEY_VERBOSE,
+    KEY_VERSION
+};
 
 /**
- * @brief Yet unused list of options
- * I should switch from using fuse_opt_parse() with
- * a callback to a list of my own options...
+ * @brief List of options
  */
-static struct fuse_opt opts_alto[] = {
+static struct fuse_opt alto_opts[] = {
+    FUSE_OPT_KEY("-h",           KEY_HELP),
+    FUSE_OPT_KEY("--help",       KEY_HELP),
+    FUSE_OPT_KEY("-f",           KEY_FOREGROUND),
+    FUSE_OPT_KEY("--foreground", KEY_FOREGROUND),
+    FUSE_OPT_KEY("-s",           KEY_SINGLE_THREADED),
+    FUSE_OPT_KEY("--single",     KEY_SINGLE_THREADED),
+    FUSE_OPT_KEY("-v",           KEY_VERBOSE),
+    FUSE_OPT_KEY("--verbose",    KEY_VERBOSE),
+    FUSE_OPT_KEY("-V",           KEY_VERSION),
+    FUSE_OPT_KEY("--version",    KEY_VERSION),
     FUSE_OPT_END
 };
 
@@ -234,81 +252,123 @@ void* init_alto(fuse_conn_info* info)
 {
     (void)info;
 
-    // FIXME: Where do I really get the "device" to mount?
-    // Handling it on my own by using the last argv[] can't be right.
     afs = new AltoFS(filenames, verbose);
 
 #if defined(DEBUG)
     if (verbose > 2) {
-      printf("%s: fuse_conn_info* = %p\n", __func__, (void*)info);
-      printf("%s:   proto_major             : %u\n", __func__, info->proto_major);
-      printf("%s:   proto_minor             : %u\n", __func__, info->proto_minor);
-      printf("%s:   async_read              : %u\n", __func__, info->async_read);
-      printf("%s:   max_write               : %u\n", __func__, info->max_write);
-      printf("%s:   max_readahead           : %u\n", __func__, info->max_readahead);
-      printf("%s:   capable                 : %#x\n", __func__, info->capable);
-      printf("%s:   capable.flags           : %s\n", __func__, fuse_cap(info->capable));
-      printf("%s:   want                    : %#x\n", __func__, info->want);
-      printf("%s:   want.flags              : %s\n", __func__, fuse_cap(info->want));
-      printf("%s:   max_background          : %u\n", __func__, info->max_background);
-      printf("%s:   congestion_threshold    : %u\n", __func__, info->congestion_threshold);
+        printf("%s: fuse_conn_info* = %p\n", __func__, (void*)info);
+        printf("%s:   proto_major             : %u\n", __func__, info->proto_major);
+        printf("%s:   proto_minor             : %u\n", __func__, info->proto_minor);
+        printf("%s:   async_read              : %u\n", __func__, info->async_read);
+        printf("%s:   max_write               : %u\n", __func__, info->max_write);
+        printf("%s:   max_readahead           : %u\n", __func__, info->max_readahead);
+        printf("%s:   capable                 : %#x\n", __func__, info->capable);
+        printf("%s:   capable.flags           : %s\n", __func__, fuse_cap(info->capable));
+        printf("%s:   want                    : %#x\n", __func__, info->want);
+        printf("%s:   want.flags              : %s\n", __func__, fuse_cap(info->want));
+        printf("%s:   max_background          : %u\n", __func__, info->max_background);
+        printf("%s:   congestion_threshold    : %u\n", __func__, info->congestion_threshold);
     }
 #endif
     return afs;
 }
 
-int usage(const char* program)
+static int usage(const char* program)
 {
     const char* prog = strrchr(program, '/');
     prog = prog ? prog + 1 : program;
     fprintf(stderr, "%s Version %s\n", prog, FUSE_ALTO_VERSION);
     fprintf(stderr, "usage: %s <mountpoint> [options] <disk image file(s)>\n", prog);
     fprintf(stderr, "Where [options] can be one or more of\n");
+    fprintf(stderr, "    -h|--help              print this help\n");
+    fprintf(stderr, "    -f|--foreground        run fuse-alto in the foreground\n");
+    fprintf(stderr, "    -s|--single            run fuse-alto single threaded\n");
     fprintf(stderr, "    -v|--verbose           set verbose mode (can be repeated)\n");
-    char name[] = "fuse-alto";
-    char help[] = "-ho";
-    char* argv[3];
-    int argc = 0;
-    argv[argc++] = name;
-    argv[argc++] = help;
-    argv[argc] = NULL;
-    fuse_main(argc, argv, &fuse_ops, NULL);
-    fprintf(stderr, "\n");
-    fprintf(stderr, "The last parameter is an Alto disk image file, or two\n");
-    fprintf(stderr, "of them separated by a comma for double disk images.\n");
     return 0;
 }
 
-int fuse_opt_alto(void* data, const char* arg, int key, struct fuse_args* outargs)
+static int is_alto_opt(const char* arg)
 {
-#if defined(DEBUG)
-    printf("%s: key=%d arg=%s\n", __func__, key, arg);
-#endif
+    // no "-o option" yet
+    return 0;
+}
+
+static int alto_fuse_main(struct fuse_args *args)
+{
+    return fuse_main(args->argc, args->argv, fuse_ops, NULL);
+}
+
+static int fuse_opt_proc(void* data, const char* arg, int key, struct fuse_args* outargs)
+{
+    char* arg0 = reinterpret_cast<char *>(data);
+
     switch (key) {
     case FUSE_OPT_KEY_OPT:
-        if (!strcmp(arg, "-v"))
-            verbose++;
-        if (!strcmp(arg, "-f"))
-            foreground = 1;
-        if (!strcmp(arg, "-s"))
-            multithreaded = 0;
+        if (is_alto_opt(arg)) {
+            size_t size = strlen(arg) + 3;
+            char* tmp = new char[size];
+            snprintf(tmp, size, "-o%s", arg);
+            // Not yet
+            // fuse_opt_add_arg(atlto_args, arg, -1);
+            delete[] tmp;
+            return 0;
+        }
         break;
+
     case FUSE_OPT_KEY_NONOPT:
-        if (NULL == mountpoint) {
-            mountpoint = arg;
-            break;
+        if (0 == nonopt_seen++) {
+            return 1;
         }
         if (NULL == filenames) {
-            filenames = arg;
-            break;
+            size_t size = strlen(arg) + 1;
+            filenames = new char[size];
+            snprintf(filenames, size, "%s", arg);
+            return 0;
+        } else {
+            size_t size = strlen(filenames) + 1 + strlen(arg) + 1;
+            char* tmp = new char[size];
+            snprintf(tmp, size, "%s,%s", filenames, arg);
+            delete[] filenames;
+            filenames = tmp;
+            return 0;
         }
+        break;
+
+    case KEY_HELP:
+        usage(arg0);
+        fuse_opt_add_arg(outargs, "-ho");
+        alto_fuse_main(outargs);
+        exit(1);
+
+    case KEY_FOREGROUND:
+        foreground = 1;
         return 1;
+
+    case KEY_SINGLE_THREADED:
+        multithreaded = 0;
+        return 1;
+
+    case KEY_VERBOSE:
+        verbose++;
+        return 0;
+
+    case KEY_VERSION:
+        printf("fuse-alto version %s\n", FUSE_ALTO_VERSION);
+        fuse_opt_add_arg(outargs, "--version");
+        alto_fuse_main(outargs);
+        exit(0);
+
+    default:
+        fprintf(stderr, "internal error\n");
+        exit(2);
     }
     return 0;
 }
 
-void shutdown_fuse()
+static void shutdown_fuse()
 {
+    delete afs;
+    afs = 0;
     if (fuse) {
         if (verbose)
             printf("%s: removing signal handlers\n", __func__);
@@ -323,53 +383,78 @@ void shutdown_fuse()
     }
     if (fuse) {
         if (verbose)
-            printf("%s: destroying fuse (%p)\n", __func__, (void*)fuse);
+            printf("%s: shutting down fuse\n", __func__);
         fuse_destroy(fuse);
         fuse = 0;
     }
-    delete afs;
-    afs = 0;
+    if (fuse_ops) {
+        if (verbose)
+            printf("%s: releasing fuse ops\n", __func__);
+        free(fuse_ops);
+        fuse_ops = 0;
+    }
+    if (verbose)
+            printf("%s: releasing fuse args\n", __func__);
+    fuse_opt_free_args(&fuse_args);
 }
 
 int main(int argc, char *argv[])
 {
+    int res;
     assert(sizeof(afs_kdh_t) == 32);
     assert(sizeof(afs_leader_t) == PAGESZ);
 
-    memset(&fuse_ops, 0, sizeof(fuse_ops));
-    if (argc < 3)
-        return usage(argv[0]);
-
-    fuse_ops.getattr = getattr_alto;
-    fuse_ops.unlink = unlink_alto;
-    fuse_ops.rename = rename_alto;
-    fuse_ops.open = open_alto;
-    fuse_ops.read = read_alto;
-    fuse_ops.write = write_alto;
-    fuse_ops.mknod = create_alto;
-    fuse_ops.truncate = truncate_alto;
-    fuse_ops.readdir = readdir_alto;
-    fuse_ops.utimens = utimens_alto;
-    fuse_ops.statfs = statfs_alto;
-    fuse_ops.init = init_alto;
+    fuse_ops = reinterpret_cast<struct fuse_operations *>(calloc(1, sizeof(*fuse_ops)));
+    fuse_ops->getattr = getattr_alto;
+    fuse_ops->unlink = unlink_alto;
+    fuse_ops->rename = rename_alto;
+    fuse_ops->open = open_alto;
+    fuse_ops->read = read_alto;
+    fuse_ops->write = write_alto;
+    fuse_ops->mknod = create_alto;
+    fuse_ops->truncate = truncate_alto;
+    fuse_ops->readdir = readdir_alto;
+    fuse_ops->utimens = utimens_alto;
+    fuse_ops->statfs = statfs_alto;
+    fuse_ops->init = init_alto;
 
     atexit(shutdown_fuse);
 
-    struct fuse_args args = FUSE_ARGS_INIT(argc, argv);
-    int res = fuse_opt_parse(&args, NULL, opts_alto, fuse_opt_alto);
-    if (res) {
+    struct fuse_args a = FUSE_ARGS_INIT(argc, argv);
+    memcpy(&fuse_args, &a, sizeof(fuse_args));
+
+    res = fuse_opt_parse(&fuse_args, argv[0], alto_opts, fuse_opt_proc);
+    if (res == -1) {
         perror("fuse_opt_parse()");
         exit(1);
     }
 
-    chan = fuse_mount(mountpoint, &args);
-    if (!chan) {
+    res = fuse_parse_cmdline(&fuse_args, &mountpoint, &multithreaded, &foreground);
+    if (res == -1) {
+        perror("fuse_parse_cmdline()");
+        exit(1);
+    }
+
+    struct stat st;
+    res = stat(mountpoint, &st);
+    if (res == -1) {
+        perror(mountpoint);
+        exit(1);
+    }
+
+    if (!S_ISDIR(st.st_mode)) {
+        perror(mountpoint);
+        exit(1);
+    }
+
+    chan = fuse_mount(mountpoint, &fuse_args);
+    if (0 == chan) {
         perror("fuse_mount()");
         exit(1);
     }
 
-    fuse = fuse_new(chan, &args, &fuse_ops, sizeof(fuse_ops), NULL);
-    if (!fuse) {
+    fuse = fuse_new(chan, &fuse_args, fuse_ops, sizeof(*fuse_ops), NULL);
+    if (0 == fuse) {
         perror("fuse_new()");
         exit(2);
     }

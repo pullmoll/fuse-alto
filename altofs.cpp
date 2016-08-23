@@ -412,10 +412,11 @@ page_t AltoFS::rda_to_vda(word rda)
  */
 word AltoFS::vda_to_rda(page_t vda)
 {
-    const word dp1flag = vda >= NPAGES ? 1 : 0;
-    const word cylinder = ((vda % NPAGES) / (NHEADS * NSECS)) & 0x1ff;
-    const word head = ((vda % NPAGES) / NSECS) & 1;
-    const word sector = vda % NSECS;
+    const word page = vda % NPAGES;
+    const word dp1flag = vda == page ? 0 : 1;
+    const word cylinder = (page / (NHEADS * NSECS)) & 0x1ff;
+    const word head = (page / NSECS) & 1;
+    const word sector = page % NSECS;
     const word rda = (dp1flag << 1) | (head << 2) | (cylinder << 3) | (sector << 12);
     return rda;
 }
@@ -597,16 +598,16 @@ int AltoFS::read_sysdir()
         // Verify filename with leader page
         afs_leader_t* lp = page_leader(pdv->fileptr.leader_vda);
         byte fnlen2 = lp->filename[lsb()];
-        log(3,"%s:* directory entry    : @%u **************\n", __func__, (word)((char *)pdv - m_sysdir.data()));
-        log(3,"%s:  type               : %u (%s)\n", __func__, type, 4 == type ? "allocated" : "deleted");
-        log(3,"%s:  length             : %u\n", __func__, length);
-        log(3,"%s:  fileptr.fid_dir    : %#x\n", __func__, pdv->fileptr.fid_dir);
-        log(3,"%s:  fileptr.serialno   : %#x\n", __func__, pdv->fileptr.serialno);
-        log(3,"%s:  fileptr.version    : %#x\n", __func__, pdv->fileptr.version);
-        log(3,"%s:  fileptr.blank      : %#x\n", __func__, pdv->fileptr.blank);
-        log(3,"%s:  fileptr.leader_vda : %u\n", __func__, pdv->fileptr.leader_vda);
-        log(3,"%s:  filename length    : %u (%u)\n", __func__, fnlen, fnlen2);
-        log(3,"%s:  filename           : %s\n", __func__, fn.c_str());
+        log(4,"%s:* directory entry    : @%u **************\n", __func__, (word)((char *)pdv - m_sysdir.data()));
+        log(4,"%s:  type               : %u (%s)\n", __func__, type, 4 == type ? "allocated" : "deleted");
+        log(4,"%s:  length             : %u\n", __func__, length);
+        log(4,"%s:  fileptr.fid_dir    : %#x\n", __func__, pdv->fileptr.fid_dir);
+        log(4,"%s:  fileptr.serialno   : %#x\n", __func__, pdv->fileptr.serialno);
+        log(4,"%s:  fileptr.version    : %#x\n", __func__, pdv->fileptr.version);
+        log(4,"%s:  fileptr.blank      : %#x\n", __func__, pdv->fileptr.blank);
+        log(4,"%s:  fileptr.leader_vda : %u\n", __func__, pdv->fileptr.leader_vda);
+        log(4,"%s:  filename length    : %u (%u)\n", __func__, fnlen, fnlen2);
+        log(4,"%s:  filename           : %s\n", __func__, fn.c_str());
         afs_dv dv(*pdv);
         if (count >= alloc) {
             alloc = alloc ? alloc * 2 : 32;
@@ -1611,7 +1612,15 @@ int AltoFS::is_page_free(page_t page)
 {
     afs_label_t* l;
     l = page_label(page);
-    return (l->fid_file == 0xffff) && (l->fid_dir == 0xffff) && (l->fid_id == 0xffff);
+    if (l->nbytes == 0)
+        return true;
+    if (l->fid_file != 0177777)
+        return false;
+    if (l->fid_dir != 0177777)
+        return false;
+    if (l->fid_id != 0177777)
+        return false;
+    return true;
 }
 
 /**
@@ -1729,10 +1738,7 @@ void AltoFS::fix_disk_descriptor()
         res = read_sysdir();
 
     if (0 == res) {
-        // Create a new bit table
-        std::vector<word> new_bit_table(m_kdh.disk_bt_size);
-        memset(new_bit_table.data(), 0, m_kdh.disk_bt_size * sizeof(word));
-        // And reconstruct it from SysDir files and their pages
+        // Reconstruct bit_table from SysDir files and their pages
         nfree = m_doubledisk ? 2*NPAGES : NPAGES;
         for (size_t idx = 0; idx < m_files.size(); idx++) {
             afs_dv* file = &m_files.at(idx);
@@ -1742,6 +1748,7 @@ void AltoFS::fix_disk_descriptor()
             // Skip over deleted files
             if (4 != type || 0 == fnlen)
                 continue;
+
             page_t page = dv->fileptr.leader_vda;
             afs_leader_t* lp = page_leader(page);
             afs_label_t* l0 = page_label(page);
@@ -1754,57 +1761,60 @@ void AltoFS::fix_disk_descriptor()
                 word nbytes = PAGESZ;
                 size_t left = length - offs;
                 afs_label_t* l = page_label(page);
-                if (left > 0 && !getBT(page)) {
-                    // will be fixed below
-                    log(0, "%s: page:%-4ld filepage:%-4u marked as '%s' is wrong\n",
-                        __func__, page, filepage, getBT(page) ? "used" : "free");
-                    fixed = true;
+
+                if (left > 0) {
+                    if (!getBT(page)) {
+                        log(0, "%s: page:%-4ld filepage:%u marked as '%s' is wrong\n",
+                            __func__, page, filepage, "free");
+                        fixed = true;
+                    }
+                    setBT(page, 1);
+                    nfree--;
                 }
+
                 nbytes = l->nbytes;
                 if (filepage > 0 && left >= PAGESZ && nbytes < PAGESZ) {
                     l->nbytes = PAGESZ;
-                    log(0, "%s: page:%-4ld filepage:%-4u nbytes:%u is wrong (should be:%u)\n",
+                    log(0, "%s: page:%-4ld filepage:%u nbytes:%u is wrong (should be:%u)\n",
                         __func__, page, filepage, nbytes, l->nbytes);
                     fixed = true;
                 }
+
                 if (filepage > 0 && left < PAGESZ && nbytes != left) {
                     l->nbytes = left;
-                    log(0, "%s: page:%-4ld filepage:%-4u last page nbytes:%u is wrong (should be:%u)\n",
+                    log(0, "%s: page:%-4ld filepage:%u last page nbytes:%u is wrong (should be:%u)\n",
                         __func__, page, filepage, nbytes, l->nbytes);
                     fixed = true;
                 }
+
                 // The following checks are only relevant for pages where nbytes > 0
-                if (l->nbytes > 0 && l->filepage != filepage) {
-                    log(0, "%s: page:%-4ld filepage:%-4u filepage:%u is wrong\n",
-                        __func__, page, filepage, l->filepage);
-                    l->filepage = filepage;
-                    fixed = true;
+                if (l->nbytes > 0) {
+                    if (l->filepage != filepage) {
+                        log(0, "%s: page:%-4ld filepage:%u filepage:%u is wrong (should be %u)\n",
+                            __func__, page, filepage, l->filepage, filepage);
+                        l->filepage = filepage;
+                        fixed = true;
+                    }
+                    if (l->fid_file != l0->fid_file) {
+                        log(0, "%s: page:%-4ld filepage:%u fid_file:0x%04x is wrong (should be 0x%04x)\n",
+                            __func__, page, filepage, l->fid_file, l0->fid_file);
+                        l->fid_file = l0->fid_file;
+                        fixed = true;
+                    }
+                    if (l->fid_dir != l0->fid_dir) {
+                        log(0, "%s: page:%-4ld filepage:%u fid_dir:0x%04x is wrong (should be 0x%04x)\n",
+                            __func__, page, filepage, l->fid_dir, l0->fid_dir);
+                        l->fid_dir = l0->fid_dir;
+                        fixed = true;
+                    }
+                    if (l->fid_id != l0->fid_id) {
+                        log(0, "%s: page:%-4ld filepage:%u fid_id:0x%04x is wrong (should be 0x%04x)\n",
+                            __func__, page, filepage, l->fid_id, l0->fid_id);
+                        l->fid_id = l0->fid_id;
+                        fixed = true;
+                    }
                 }
-                if (l->nbytes > 0 && l->fid_file != l0->fid_file) {
-                    log(0, "%s: page:%-4ld filepage:%-4u fid_file:%u is wrong\n",
-                        __func__, page, filepage, l->fid_file);
-                    l->fid_file = l0->fid_file;
-                    fixed = true;
-                }
-                if (l->nbytes > 0 && l->fid_dir != l0->fid_dir) {
-                    log(0, "%s: page:%-4ld filepage:%-4u fid_dir:%u is wrong\n",
-                        __func__, page, filepage, l->fid_dir);
-                    l->fid_dir = l0->fid_dir;
-                    fixed = true;
-                }
-                if (l->nbytes > 0 && l->fid_id != l0->fid_id) {
-                    log(0, "%s: page:%-4ld filepage:%-4u fid_id:%#x is wrong\n",
-                        __func__, page, filepage, l->fid_id);
-                    l->fid_id = l0->fid_id;
-                    fixed = true;
-                }
-                if (left > 0) {
-                    int idx = page / 16;
-                    int bit = 15 - (page % 16);
-                    // int bit = (page % 16);
-                    new_bit_table[idx] |= 1 << bit;
-                    nfree--;
-                }
+
                 page = rda_to_vda(l->next_rda);
                 if (filepage > 0)
                     offs += PAGESZ;
@@ -1813,20 +1823,15 @@ void AltoFS::fix_disk_descriptor()
             if (fixed) {
                 std::string fn = filename_to_string(lp->filename);
                 log(0, "%s: file '%s', %ld page%s, %ld bytes was fixed\n",
-                    __func__, fn.c_str(), pages, pages > 1 ? "s" : "", length);
+                    __func__, fn.c_str(), pages, pages != 1 ? "s" : "", length);
                 if (m_verbose > 4)
                     dump_leader(lp);
             } else {
                 std::string fn = filename_to_string(lp->filename);
-                log(4, "%s: file '%s', %ld page%s, %ld bytes verified ok\n",
-                    __func__, fn.c_str(), pages, pages > 1 ? "s" : "", length);
+                log(2, "%s: file '%s', %ld page%s, %ld bytes verified ok\n",
+                    __func__, fn.c_str(), pages, pages != 1 ? "s" : "", length);
             }
         }
-        m_bit_table = new_bit_table;
-    }
-    if (m_kdh.free_pages != nfree) {
-        m_kdh.free_pages = nfree;
-        m_disk_descriptor_dirty = false;
     }
 
     // Count free pages in bit table - again
@@ -1836,6 +1841,11 @@ void AltoFS::fix_disk_descriptor()
     my_assert (nfree == m_kdh.free_pages,
         "%s: Bit table free page count %d doesn't match KDH value %d\n",
         __func__, nfree, m_kdh.free_pages);
+    if (m_kdh.free_pages != nfree) {
+        m_kdh.free_pages = nfree;
+        m_disk_descriptor_dirty = false;
+    }
+
 }
 
 /**
@@ -1854,9 +1864,9 @@ bool AltoFS::my_assert(bool flag, const char *errmsg, ...)
         return flag;
     va_list ap;
     va_start(ap, errmsg);
-    vfprintf(stderr, errmsg, ap);
+    vfprintf(stdout, errmsg, ap);
     va_end(ap);
-    fflush(stderr);
+    fflush(stdout);
     return flag;
 }
 
@@ -1875,9 +1885,9 @@ void AltoFS::my_assert_or_die(bool flag, const char *errmsg, ...)
         return;
     va_list ap;
     va_start(ap, errmsg);
-    vfprintf(stderr, errmsg, ap);
+    vfprintf(stdout, errmsg, ap);
     va_end(ap);
-    fflush(stderr);
+    fflush(stdout);
     exit(1);
 }
 
